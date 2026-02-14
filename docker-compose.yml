@@ -51,9 +51,7 @@ services:
       # Shared web root in tmpfs (RAM) - minimal disk writes
       - web-tmpfs:/usr/share/nginx/html
       # Persistent backup on flash storage for cold-start fallback
-      - ./graph_backup:/backup
-      # Mount index.html from host for dynamic updates
-      - ./graph/index.html:/app/index.html:ro
+      - ${BACKUP_PATH:-./graph_backup}:/backup
       # Mount directory for status file in tmpfs (RAM) - minimal disk writes
       - type: tmpfs
         target: /opt/graph_automation
@@ -102,7 +100,7 @@ services:
     restart: unless-stopped
     volumes:
       - web-tmpfs:/usr/share/nginx/html:ro
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${NGINX_CONFIG_PATH:-./nginx/nginx.conf}:/etc/nginx/nginx.conf:ro
       - type: tmpfs
         target: /var/cache/nginx
         tmpfs:
