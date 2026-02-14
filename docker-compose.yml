@@ -24,6 +24,15 @@ services:
       - FETCHER_CRON_SCHEDULE=${FETCHER_CRON_SCHEDULE:-*/10 * * * *}
       # Configure HA token via environment variable (recommended for Docker)
       - HA_TOKEN=${HA_TOKEN:-}
+      # Station configuration
+      - STATION_NUMBER=${STATION_NUMBER:-030315}
+      - HA_API_BASE_URL=${HA_API_BASE_URL:-http://192.168.0.250:8123/api}
+      # Optional override for data URL
+      - DATA_URL=${DATA_URL:-}
+      # Station display name pieces
+      - STATION_NAME_PREFIX=${STATION_NAME_PREFIX:-Upton}
+      - RIVER_NAME=${RIVER_NAME:-}
+      - RIVER_NAME_FALLBACK=${RIVER_NAME_FALLBACK:-Noire}
       # Log level: DEBUG, INFO, WARNING, ERROR
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # Prevent runtime file writes in container filesystem
@@ -71,6 +80,10 @@ services:
       - river-network
     environment:
       - TZ=${TZ:-America/Montreal}
+      # Station configuration
+      - STATION_NUMBER=${STATION_NUMBER:-030315}
+      # Optional override for graph URL
+      - GRAPH_URL=${GRAPH_URL:-}
       # Configure cron schedule (default: every 2 hours at :05 to avoid collision with fetcher)
       - GRAPH_CRON_SCHEDULE=${GRAPH_CRON_SCHEDULE:-5 */2 * * *}
       # Log level: DEBUG, INFO, WARNING, ERROR
