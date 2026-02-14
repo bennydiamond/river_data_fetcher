@@ -1,8 +1,7 @@
 # River Data Fetcher - Docker Setup
 
-[![CI](https://github.com/bennydiamond/river_data_fetcher/actions/workflows/ci.yml/badge.svg)](https://github.com/bennydiamond/river_data_fetcher/actions/workflows/ci.yml)
-[![GHCR Fetcher](https://img.shields.io/badge/ghcr.io-river--data--fetcher-blue?logo=github)](https://github.com/bennydiamond/river_data_fetcher/pkgs/container/river-data-fetcher)
-[![GHCR Graph](https://img.shields.io/badge/ghcr.io-river--graph--downloader-blue?logo=github)](https://github.com/bennydiamond/river_data_fetcher/pkgs/container/river-graph-downloader)
+[![ci](https://github.com/bennydiamond/river_data_fetcher/actions/workflows/ci.yml/badge.svg)](https://github.com/bennydiamond/river_data_fetcher/actions/workflows/ci.yml)
+[![build-and-publish](https://github.com/bennydiamond/river_data_fetcher/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/bennydiamond/river_data_fetcher/actions/workflows/docker-publish.yml)
 [![Release](https://img.shields.io/github/v/release/bennydiamond/river_data_fetcher)](https://github.com/bennydiamond/river_data_fetcher/releases)
 [![License](https://img.shields.io/github/license/bennydiamond/river_data_fetcher)](https://github.com/bennydiamond/river_data_fetcher/blob/master/LICENSE)
 
