@@ -1,0 +1,33 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Fetcher: Run Once",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/fetcher/river_data_fetcher.py",
+      "cwd": "${workspaceFolder}/fetcher",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "LOG_LEVEL": "DEBUG",
+        "HA_TOKEN": "${env:HA_TOKEN}"
+      }
+    },
+    {
+      "name": "Graph: Run Once",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/graph/download_graph.py",
+      "cwd": "${workspaceFolder}/graph",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "LOG_LEVEL": "DEBUG",
+        "WEB_PORT": "8080"
+        "LAST_SUCCESS_FILE": "${workspaceFolder}/graph/output/last_success.json"
+    }
+  ]
+}

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Prevision du debit de la riviere</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin-top: 20px;
+            background-color: #f4f4f4;
+            color: #333;
+        }
+        h1 {
+            color: #2F4A7F;
+            font-size: 1.8em;
+        }
+        img {
+            /* FIX: display: block forces the image to be on its own line */
+            display: block;
+            
+            /* FIX: margin: auto centers a block element horizontally */
+            margin-left: auto;
+            margin-right: auto;
+            
+            max-width: 90%;
+            height: auto;
+            border: 1px solid #ddd;
+            box-shadow: 3px 3px 8px rgba(0,0,0,0.3);
+            margin-bottom: 20px;
+        }
+        p {
+            font-size: 0.9em;
+            color: #555;
+            margin-bottom: 5px;
+        }
+        .download-links {
+            margin-top: 20px;
+            padding: 15px; /* Increased padding slightly for looks */
+            background-color: #e9e9e9;
+            border-radius: 8px;
+            display: inline-block; 
+        }
+        .download-links span {
+            /* Makes the text label sit above the buttons */
+            display: block; 
+            margin-bottom: 10px;
+            font-weight: bold;
+            font-size: 0.9em;
+            color: #444;
+        }
+        .download-links a {
+            display: inline-block;
+            margin: 0 10px;
+            padding: 8px 15px;
+            background-color: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background-color 0.3s ease;
+        }
+        .download-links a:hover {
+            background-color: #0056b3;
+            text-decoration: none;
+        }
+        .source-link {
+            margin-top: 30px;
+            font-size: 1em;
+        }
+        .source-link a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        .source-link a:hover {
+            text-decoration: underline;
+        }
+        .stale-banner {
+            display: none;
+            margin: 12px auto 0;
+            padding: 8px 14px;
+            background: #b00020;
+            color: #fff;
+            font-weight: bold;
+            border-radius: 6px;
+            width: fit-content;
+        }
+    </style>
+</head>
+<body>
+    <h1>Derniere prevision du debit de la riviere (detail des prochains jours)</h1>
+    
+    <img src="graphs/latest_graph.png" alt="Latest River Flow Forecast Graph">
+    
+    <div class="download-links">
+        <span>Telecharger des versions compressees :</span>
+        <a href="graphs/latest_graph_compressed.png" download>PNG (compresse)</a>
+        <a href="graphs/latest_graph.jpg" download>JPG</a>
+    </div>
+
+    <div id="staleBanner" class="stale-banner">DONNEES PERIMEES - SITE INJOIGNABLE</div>
+
+    <p class="source-link">Donnees fournies par : <a href="https://www.cehq.gouv.qc.ca/suivihydro/graphique.asp?noStation=030315" target="_blank">cehq.gouv.qc.ca</a></p>
+    <p>Derniere mise a jour : <span id="lastUpdated">Chargement...</span> (<span id="lastUpdatedAge">...</span>)</p>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', async function() {
+            const options = {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            };
+            const el = document.getElementById('lastUpdated');
+            const ageEl = document.getElementById('lastUpdatedAge');
+            const staleBanner = document.getElementById('staleBanner');
+
+            try {
+                const response = await fetch('graphs/last_success.json', { cache: 'no-store' });
+                if (!response.ok) {
+                    throw new Error('status ' + response.status);
+                }
+                const data = await response.json();
+                if (!data.last_successful_run) {
+                    throw new Error('missing timestamp');
+                }
+                const ts = new Date(data.last_successful_run);
+                const formatter = new Intl.DateTimeFormat('fr-CA', {
+                    ...options,
+                    timeZone: data.timezone || undefined
+                });
+                el.textContent = formatter.format(ts);
+                ageEl.textContent = formatAge(ts, new Date());
+                if (data.stale_applied === true) {
+                    staleBanner.style.display = 'block';
+                }
+            } catch (err) {
+                el.textContent = 'Indisponible';
+                ageEl.textContent = 'Indisponible';
+            }
+        });
+
+        function formatAge(fromTime, toTime) {
+            const diffMs = Math.max(0, toTime - fromTime);
+            const diffSec = Math.floor(diffMs / 1000);
+            const days = Math.floor(diffSec / 86400);
+            const hours = Math.floor((diffSec % 86400) / 3600);
+            const minutes = Math.floor((diffSec % 3600) / 60);
+
+            if (days > 0) {
+                return `il y a ${days} j ${hours} h`;
+            }
+            if (hours > 0) {
+                return `il y a ${hours} h ${minutes} min`;
+            }
+            return `il y a ${minutes} min`;
+        }
+    </script>
+</body>
+</html>

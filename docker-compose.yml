@@ -1,0 +1,142 @@
+version: '3.8'
+
+services:
+  river-data-fetcher:
+    image: ghcr.io/bennydiamond/river-data-fetcher:latest
+    container_name: river-data-fetcher
+    restart: unless-stopped
+    volumes:
+      # Use tmpfs for /tmp to reduce disk writes
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 16m
+      # Use tmpfs for /var/tmp to reduce disk writes
+      - type: tmpfs
+        target: /var/tmp
+        tmpfs:
+          size: 8m
+    networks:
+      - river-network
+    environment:
+      - TZ=${TZ:-America/Montreal}
+      # Configure cron schedule (default: every 10 minutes)
+      - FETCHER_CRON_SCHEDULE=${FETCHER_CRON_SCHEDULE:-*/10 * * * *}
+      # Configure HA token via environment variable (recommended for Docker)
+      - HA_TOKEN=${HA_TOKEN:-}
+      # Log level: DEBUG, INFO, WARNING, ERROR
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Prevent runtime file writes in container filesystem
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      - HOME=/tmp
+      - XDG_CACHE_HOME=/tmp/.cache
+    # Resource limits for 2GB system
+    mem_limit: 128m
+    mem_reservation: 64m
+    cpus: 0.5
+    # Send logs to remote syslog server
+    logging:
+      driver: syslog
+      options:
+        syslog-address: "udp://${SYSLOG_HOST:-192.168.0.15}:${SYSLOG_PORT:-514}"
+        tag: "river-data-fetcher"
+        syslog-format: "rfc3164"
+
+  graph-downloader:
+    image: ghcr.io/bennydiamond/river-graph-downloader:latest
+    container_name: graph-downloader
+    restart: unless-stopped
+    volumes:
+      # Shared web root in tmpfs (RAM) - minimal disk writes
+      - web-tmpfs:/usr/share/nginx/html
+      # Persistent backup on flash storage for cold-start fallback
+      - ./graph_backup:/backup
+      # Mount index.html from host for dynamic updates
+      - ./graph/index.html:/app/index.html:ro
+      # Mount directory for status file in tmpfs (RAM) - minimal disk writes
+      - type: tmpfs
+        target: /opt/graph_automation
+        tmpfs:
+          size: 1m  # Just for JSON file
+      # Playwright downloads use /tmp; keep it in RAM
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 64m
+      # Use tmpfs for /var/tmp to reduce disk writes
+      - type: tmpfs
+        target: /var/tmp
+        tmpfs:
+          size: 8m
+    networks:
+      - river-network
+    environment:
+      - TZ=${TZ:-America/Montreal}
+      # Configure cron schedule (default: every 2 hours at :05 to avoid collision with fetcher)
+      - GRAPH_CRON_SCHEDULE=${GRAPH_CRON_SCHEDULE:-5 */2 * * *}
+      # Log level: DEBUG, INFO, WARNING, ERROR
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Prevent runtime file writes in container filesystem
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      - HOME=/tmp
+      - XDG_CACHE_HOME=/tmp/.cache
+    # Resource limits optimized for 2GB RAM system
+    mem_limit: 768m
+    mem_reservation: 512m
+    cpus: 1.0
+    # Shared memory for Chrome/Playwright (reduced for low-RAM system)
+    shm_size: 256m
+    # Send logs to remote syslog server
+    logging:
+      driver: syslog
+      options:
+        syslog-address: "udp://${SYSLOG_HOST:-192.168.0.15}:${SYSLOG_PORT:-514}"
+        tag: "graph-downloader"
+        syslog-format: "rfc3164"
+
+  web:
+    image: nginx:alpine
+    container_name: river-web
+    restart: unless-stopped
+    volumes:
+      - web-tmpfs:/usr/share/nginx/html:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - type: tmpfs
+        target: /var/cache/nginx
+        tmpfs:
+          size: 8m
+      - type: tmpfs
+        target: /var/run
+        tmpfs:
+          size: 2m
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 8m
+    networks:
+      - river-network
+    ports:
+      - "${WEB_PORT:-80}:80"
+    mem_limit: 64m
+    mem_reservation: 32m
+    cpus: 0.25
+    logging:
+      driver: syslog
+      options:
+        syslog-address: "udp://${SYSLOG_HOST:-192.168.0.15}:${SYSLOG_PORT:-514}"
+        tag: "river-web"
+        syslog-format: "rfc3164"
+
+networks:
+  river-network:
+    driver: bridge
+
+volumes:
+  web-tmpfs:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=64m,mode=0777"

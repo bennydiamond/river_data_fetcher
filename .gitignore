@@ -1,0 +1,58 @@
+# Sensitive files
+ha_token.txt
+.env
+
+# Docker generated data (not needed - using tmpfs now)
+# graphs/
+# data/
+
+# Graph backup artifacts
+graph_backup/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/*
+!.vscode/launch.json
+!.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs and test artifacts
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# OS
+.DS_Store
+Thumbs.db
