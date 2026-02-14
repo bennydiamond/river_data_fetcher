@@ -5,12 +5,25 @@ set -e
 CRON_SCHEDULE="${GRAPH_CRON_SCHEDULE:-5 */2 * * *}"
 BACKUP_CRON_SCHEDULE="${GRAPH_BACKUP_CRON_SCHEDULE:-15 3 * * *}"
 
+GRAPH_ARGS=()
+if [ -n "${STATION_NUMBER:-}" ]; then
+	GRAPH_ARGS+=("--station-number" "${STATION_NUMBER}")
+fi
+if [ -n "${GRAPH_URL:-}" ]; then
+	GRAPH_ARGS+=("--graph-url" "${GRAPH_URL}")
+fi
+
+GRAPH_ARGS_STRING=""
+for arg in "${GRAPH_ARGS[@]}"; do
+	GRAPH_ARGS_STRING+=" $(printf '%q' "$arg")"
+done
+
 echo "Setting up cron with schedule: ${CRON_SCHEDULE}"
 
 # Create crontab dynamically - output to stdout/stderr (captured by Docker logging)
 CRON_FILE="/etc/cron.d/graph-cron"
 {
-	echo "${CRON_SCHEDULE} root cd /app && python3 /app/download_graph.py 2>&1"
+	echo "${CRON_SCHEDULE} root cd /app && python3 /app/download_graph.py${GRAPH_ARGS_STRING} 2>&1"
 	echo "${BACKUP_CRON_SCHEDULE} root /app/backup_web_root.sh 2>&1"
 	echo ""
 } > "${CRON_FILE}"
@@ -39,15 +52,18 @@ if [ -f "${BACKUP_DIR}/last_success.json" ]; then
 fi
 
 # Apply stale overlay immediately if restored cache is too old
-python3 /app/download_graph.py --check-stale 2>&1 || true
+python3 /app/download_graph.py --check-stale "${GRAPH_ARGS[@]}" 2>&1 || true
 
 # Copy index.html into RAM-based web root
 if [ -f /app/index.html ]; then
-	cp /app/index.html "${WEB_ROOT}/index.html"
+	SOURCE_STATION_NUMBER="${STATION_NUMBER:-030315}"
+	SOURCE_URL="${GRAPH_URL:-https://www.cehq.gouv.qc.ca/suivihydro/graphique.asp?noStation=${SOURCE_STATION_NUMBER}}"
+	SOURCE_URL_ESCAPED=$(printf '%s' "$SOURCE_URL" | sed 's/[&/]/\\&/g')
+	sed "s#https://www.cehq.gouv.qc.ca/suivihydro/graphique.asp?noStation=[0-9]*#${SOURCE_URL_ESCAPED}#g" /app/index.html > "${WEB_ROOT}/index.html"
 fi
 
 echo "Running initial graph download..."
-python3 /app/download_graph.py 2>&1 || echo "Initial run failed, but continuing..."
+python3 /app/download_graph.py "${GRAPH_ARGS[@]}" 2>&1 || echo "Initial run failed, but continuing..."
 
 echo "Starting cron daemon..."
 # Start cron in foreground mode

@@ -16,6 +16,8 @@ This project runs two automated tasks in separate Docker containers with configu
 - ✅ Configurable cron schedules via environment variables
 - ✅ Programs run immediately on startup, then follow cron schedule
 - ✅ Home Assistant token configurable via environment variable or file
+- ✅ Station number and HA API base URL configurable via env or CLI args
+- ✅ Entity IDs derived from station number
 - ✅ Automatic restarts on failure
 - ✅ Montreal timezone configured
 - ✅ **Remote syslog logging - minimal disk writes**
@@ -52,13 +54,13 @@ This setup is specifically designed to minimize writes on devices that use flash
 
 ## Quick Start
 
-### 1. Configure Home Assistant Token
+### 1. Configure Home Assistant Token and Station
 
 **Option A: .env File (Recommended)**
 
 ```bash
 cp .env.example .env
-# Edit .env and set your HA_TOKEN
+# Edit .env and set your HA_TOKEN and station settings
 nano .env
 ```
 
@@ -86,6 +88,21 @@ docker logs -f river-data-fetcher
 docker logs -f graph-downloader
 ```
 
+## Local Development (Build From Source)
+
+Use the local override file to build images from the `fetcher/` and `graph/` folders.
+
+```bash
+# Build and run with local images
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+```
+
+Disable syslog during local testing (optional):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml -f docker-compose.no-syslog.yml up -d --build
+```
+
 ## Configuration
 
 ### Using .env File (Recommended)
@@ -95,15 +112,8 @@ docker logs -f graph-downloader
 cp .env.example .env
 ```
 
-2. Edit `.env` and set your values:
-```bash
-# Set your Home Assistant token
-HA_TOKEN=your_token_here
-
-# Adjust schedules if needed
-FETCHER_CRON_SCHEDULE=*/10 * * * *
-GRAPH_CRON_SCHEDULE=5 */2 * * *
-```
+2. Edit `.env` and set your values. Refer to the template for more information on required/optional values to set:
+[.env.example](.env.example)
 
 ### Cron Schedules
 
@@ -193,6 +203,15 @@ Both scripts retry network failures by default:
 ```bash
 FETCH_RETRY_COUNT=3
 FETCH_RETRY_DELAY_SECONDS=5
+```
+
+### Home Assistant Entity IDs
+
+Entity IDs are derived from the station number to keep configuration minimal:
+
+```text
+sensor.station_<station_number>_flow_rate
+sensor.station_<station_number>_height_level
 ```
 
 The graph downloader also maintains a daily backup on persistent storage so the web server can serve data after a reboot without connectivity:

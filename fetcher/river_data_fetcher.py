@@ -1,3 +1,4 @@
+import argparse
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -16,25 +17,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURATION ---
-STATION_NUMBER = "030315"
-DATA_URL = (
-    f"https://www.cehq.gouv.qc.ca/suivihydro/tableau.asp?NoStation={STATION_NUMBER}"
+DEFAULT_STATION_NUMBER = "030315"
+DEFAULT_STATION_NAME_PREFIX = "Upton"
+DEFAULT_RIVER_NAME_FALLBACK = "Noire"
+DEFAULT_DATA_URL_TEMPLATE = (
+    "https://www.cehq.gouv.qc.ca/suivihydro/tableau.asp?NoStation={station_number}"
 )
+DEFAULT_HA_API_BASE_URL = "http://192.168.0.250:8123/api"
 FETCH_RETRY_COUNT = int(os.environ.get("FETCH_RETRY_COUNT", "3"))
 FETCH_RETRY_DELAY_SECONDS = int(os.environ.get("FETCH_RETRY_DELAY_SECONDS", "5"))
-
-# Home Assistant REST API Configuration
-HA_API_BASE_URL = "http://192.168.0.250:8123/api"
-
-# IMPORTANT: Replace YOUR_LONG_LIVED_ACCESS_TOKEN with the token you generated.
-HA_HEADERS = {
-    "Authorization": "Bearer YOUR_LONG_LIVED_ACCESS_TOKEN",
-    "Content-Type": "application/json",
-}
-
-# Define the Home Assistant entity IDs that will be updated
-HA_FLOW_ENTITY_ID = "sensor.riviere_noire_flow_rate"
-HA_HEIGHT_ENTITY_ID = "sensor.riviere_noire_height_level"
 
 # Quebec Timezone (for local timestamps)
 QUEBEC_TZ = pytz.timezone("America/Montreal")
@@ -81,24 +72,85 @@ def load_ha_token():
         exit(1)
 
 
-# Load the token once when the script starts
-HA_LONG_LIVED_TOKEN = load_ha_token()
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Fetch river data and send it to Home Assistant"
+    )
+    parser.add_argument(
+        "--station-number",
+        default=os.environ.get("STATION_NUMBER", DEFAULT_STATION_NUMBER),
+        help="Station number (env: STATION_NUMBER)",
+    )
+    parser.add_argument(
+        "--ha-api-base-url",
+        default=os.environ.get("HA_API_BASE_URL", DEFAULT_HA_API_BASE_URL),
+        help="Home Assistant API base URL (env: HA_API_BASE_URL)",
+    )
+    parser.add_argument(
+        "--data-url",
+        default=os.environ.get("DATA_URL"),
+        help="Override data URL (env: DATA_URL)",
+    )
+    parser.add_argument(
+        "--ha-token",
+        default=os.environ.get("HA_TOKEN"),
+        help="Home Assistant long-lived access token (env: HA_TOKEN)",
+    )
+    parser.add_argument(
+        "--station-name-prefix",
+        default=os.environ.get("STATION_NAME_PREFIX", DEFAULT_STATION_NAME_PREFIX),
+        help="Station name prefix (env: STATION_NAME_PREFIX)",
+    )
+    parser.add_argument(
+        "--river-name",
+        default=os.environ.get("RIVER_NAME"),
+        help="Override river name in station display (env: RIVER_NAME)",
+    )
+    parser.add_argument(
+        "--river-name-fallback",
+        default=os.environ.get("RIVER_NAME_FALLBACK", DEFAULT_RIVER_NAME_FALLBACK),
+        help="Fallback river name (env: RIVER_NAME_FALLBACK)",
+    )
+    return parser.parse_args()
 
-# Now define HA_HEADERS using the loaded token
-HA_HEADERS = {
-    "Authorization": f"Bearer {HA_LONG_LIVED_TOKEN}",
-    "Content-Type": "application/json",
-}
+
+def build_runtime_config(args):
+    station_number = args.station_number.strip()
+    data_url = args.data_url
+    if not data_url:
+        data_url = DEFAULT_DATA_URL_TEMPLATE.format(station_number=station_number)
+    ha_api_base_url = args.ha_api_base_url.strip()
+    station_name_prefix = args.station_name_prefix.strip()
+    river_name_override = args.river_name.strip() if args.river_name else ""
+    river_name_fallback = args.river_name_fallback.strip()
+    ha_flow_entity_id = f"sensor.station_{station_number}_flow_rate"
+    ha_height_entity_id = f"sensor.station_{station_number}_height_level"
+    return {
+        "station_number": station_number,
+        "data_url": data_url,
+        "ha_api_base_url": ha_api_base_url,
+        "station_name_prefix": station_name_prefix,
+        "river_name_override": river_name_override,
+        "river_name_fallback": river_name_fallback,
+        "ha_flow_entity_id": ha_flow_entity_id,
+        "ha_height_entity_id": ha_height_entity_id,
+    }
 
 
 # --- HELPER FUNCTION FOR DATA FETCHING AND PARSING ---
-def fetch_and_parse_data():
+def fetch_and_parse_data(
+    data_url,
+    station_number,
+    station_name_prefix,
+    river_name_override,
+    river_name_fallback,
+):
     """Fetches the HTML, parses the table, and returns the latest data."""
-    logger.debug(f"Fetching data from {DATA_URL}...")
+    logger.debug(f"Fetching data from {data_url}...")
     response = None
     for attempt in range(1, FETCH_RETRY_COUNT + 1):
         try:
-            response = requests.get(DATA_URL, timeout=15)
+            response = requests.get(data_url, timeout=15)
             response.raise_for_status()
             break
         except requests.exceptions.RequestException as e:
@@ -212,26 +264,34 @@ def fetch_and_parse_data():
         # Extract station ID
         station_name_tag = soup.find("span", id="spnNoStation")
         station_id = (
-            station_name_tag.text.strip() if station_name_tag else STATION_NUMBER
+            station_name_tag.text.strip() if station_name_tag else station_number
         )
 
-        # Construct station_name as "Upton - 030315 - Noire"
-        river_designation = "Noire"  # Default fallback
-        station_name_full_text_element = soup.find(
-            "p",
-            align="center",
-            class_=None,
-            string=lambda s: "Niveau d'eau et débit à la station" in s,
-        )
-        if station_name_full_text_element:
-            full_text = station_name_full_text_element.get_text(strip=True)
-            parts_after_id = full_text.split(station_id)
-            if len(parts_after_id) > 1:
-                potential_river_part = parts_after_id[1].strip()
-                if " - " in potential_river_part:
-                    river_designation = potential_river_part.split(" - ")[-1].strip()
+        # Construct station_name as "<Prefix> - <Station> - <River>"
+        if river_name_override:
+            river_designation = river_name_override
+        else:
+            river_designation = river_name_fallback
+            station_name_full_text_element = soup.find(
+                "p",
+                align="center",
+                class_=None,
+                string=lambda s: "Niveau d'eau et débit à la station" in s,
+            )
+            if station_name_full_text_element:
+                full_text = station_name_full_text_element.get_text(strip=True)
+                parts_after_id = full_text.split(station_id)
+                if len(parts_after_id) > 1:
+                    potential_river_part = parts_after_id[1].strip()
+                    if " - " in potential_river_part:
+                        river_designation = potential_river_part.split(" - ")[
+                            -1
+                        ].strip()
 
-        station_name = f"Upton - {station_id} - {river_designation}"
+        if station_name_prefix:
+            station_name = f"{station_name_prefix} - {station_id} - {river_designation}"
+        else:
+            station_name = f"{station_id} - {river_designation}"
 
         height_unit = ""
         flow_unit = ""
@@ -293,7 +353,9 @@ def fetch_and_parse_data():
 
 
 # --- REST OF THE SCRIPT (send_to_home_assistant and main block) ---
-def send_to_home_assistant(data):
+def send_to_home_assistant(
+    data, ha_api_base_url, ha_headers, flow_entity_id, height_entity_id, source_url
+):
     """Sends the parsed data to Home Assistant via REST API."""
     if not data:
         logger.warning("No data to send to Home Assistant.")
@@ -315,7 +377,7 @@ def send_to_home_assistant(data):
             "height_m": data["height"],
             "station_id": data["station_id"],
             "station_name": data["station_name"],
-            "source_url": DATA_URL,
+            "source_url": source_url,
         },
     }
 
@@ -333,17 +395,17 @@ def send_to_home_assistant(data):
             "flow_m3_s": data["flow"],
             "station_id": data["station_id"],
             "station_name": data["station_name"],
-            "source_url": DATA_URL,
+            "source_url": source_url,
         },
     }
 
-    flow_api_url = f"{HA_API_BASE_URL}/states/{HA_FLOW_ENTITY_ID}"
-    height_api_url = f"{HA_API_BASE_URL}/states/{HA_HEIGHT_ENTITY_ID}"
+    flow_api_url = f"{ha_api_base_url}/states/{flow_entity_id}"
+    height_api_url = f"{ha_api_base_url}/states/{height_entity_id}"
 
-    logger.debug(f"Sending data to Home Assistant REST API for {HA_FLOW_ENTITY_ID}")
+    logger.debug(f"Sending data to Home Assistant REST API for {flow_entity_id}")
     try:
         response_flow = requests.post(
-            flow_api_url, json=flow_payload, headers=HA_HEADERS, timeout=10
+            flow_api_url, json=flow_payload, headers=ha_headers, timeout=10
         )
         response_flow.raise_for_status()
         logger.info(
@@ -352,10 +414,10 @@ def send_to_home_assistant(data):
     except requests.exceptions.RequestException as e:
         logger.error(f"Error sending river flow data to Home Assistant: {e}")
 
-    logger.debug(f"Sending data to Home Assistant REST API for {HA_HEIGHT_ENTITY_ID}")
+    logger.debug(f"Sending data to Home Assistant REST API for {height_entity_id}")
     try:
         response_height = requests.post(
-            height_api_url, json=height_payload, headers=HA_HEADERS, timeout=10
+            height_api_url, json=height_payload, headers=ha_headers, timeout=10
         )
         response_height.raise_for_status()
         logger.info(
@@ -376,9 +438,31 @@ if __name__ == "__main__":
         )
         exit(1)
 
-    parsed_data = fetch_and_parse_data()
+    args = parse_args()
+    runtime_config = build_runtime_config(args)
+
+    ha_long_lived_token = args.ha_token or load_ha_token()
+    ha_headers = {
+        "Authorization": f"Bearer {ha_long_lived_token}",
+        "Content-Type": "application/json",
+    }
+
+    parsed_data = fetch_and_parse_data(
+        runtime_config["data_url"],
+        runtime_config["station_number"],
+        runtime_config["station_name_prefix"],
+        runtime_config["river_name_override"],
+        runtime_config["river_name_fallback"],
+    )
     if parsed_data:
-        send_to_home_assistant(parsed_data)
+        send_to_home_assistant(
+            parsed_data,
+            runtime_config["ha_api_base_url"],
+            ha_headers,
+            runtime_config["ha_flow_entity_id"],
+            runtime_config["ha_height_entity_id"],
+            runtime_config["data_url"],
+        )
     else:
         print("Failed to fetch or parse river data. Not sending to Home Assistant.")
 

@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 from playwright.async_api import async_playwright
 import os
@@ -9,6 +10,10 @@ import json
 import subprocess
 
 # --- CONFIGURATION ---
+DEFAULT_STATION_NUMBER = "030315"
+DEFAULT_GRAPH_URL_TEMPLATE = (
+    "https://www.cehq.gouv.qc.ca/suivihydro/graphique.asp?noStation={station_number}"
+)
 LAST_SUCCESS_FILE = os.environ.get(
     "LAST_SUCCESS_FILE", "/opt/graph_automation/last_success.json"
 )
@@ -20,7 +25,6 @@ BACKUP_SCRIPT = os.environ.get("BACKUP_SCRIPT", "/app/backup_web_root.sh")
 WARNING_THRESHOLD_HOURS = 12
 WARNING_TEXT = "DONNÉES PÉRIMÉES ET IMPRÉCISES"
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-STATION_NUMBER = "030315"
 TIMEOUT_MS = 60000  # 60 seconds
 FETCH_RETRY_COUNT = int(os.environ.get("FETCH_RETRY_COUNT", "3"))
 FETCH_RETRY_DELAY_SECONDS = int(os.environ.get("FETCH_RETRY_DELAY_SECONDS", "10"))
@@ -45,6 +49,39 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Download river graph and publish artifacts"
+    )
+    parser.add_argument(
+        "--station-number",
+        default=os.environ.get("STATION_NUMBER", DEFAULT_STATION_NUMBER),
+        help="Station number (env: STATION_NUMBER)",
+    )
+    parser.add_argument(
+        "--graph-url",
+        default=os.environ.get("GRAPH_URL"),
+        help="Override graph URL (env: GRAPH_URL)",
+    )
+    parser.add_argument(
+        "--check-stale",
+        action="store_true",
+        help="Check and overlay stale data without downloading",
+    )
+    return parser.parse_args()
+
+
+def build_runtime_config(args):
+    station_number = args.station_number.strip()
+    graph_url = args.graph_url
+    if not graph_url:
+        graph_url = DEFAULT_GRAPH_URL_TEMPLATE.format(station_number=station_number)
+    return {
+        "station_number": station_number,
+        "graph_url": graph_url,
+    }
 
 
 # --- HELPER FUNCTIONS ---
@@ -223,8 +260,8 @@ def backup_if_missing():
 
 
 # --- MAIN FUNCTION ---
-async def download_graph_png():
-    url = f"https://www.cehq.gouv.qc.ca/suivihydro/graphique.asp?noStation={STATION_NUMBER}"
+async def download_graph_png(graph_url):
+    url = graph_url
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     for attempt in range(1, FETCH_RETRY_COUNT + 1):
@@ -309,11 +346,14 @@ async def download_graph_png():
 
 
 if __name__ == "__main__":
-    if "--check-stale" in os.sys.argv:
+    args = parse_args()
+    runtime_config = build_runtime_config(args)
+
+    if args.check_stale:
         logger.info("--- Checking for stale cached data ---")
         check_and_overlay_stale_data()
         logger.info("--- Stale check finished ---")
     else:
         logger.info("--- Starting graph download script ---")
-        asyncio.run(download_graph_png())
+        asyncio.run(download_graph_png(runtime_config["graph_url"]))
         logger.info("--- Script finished ---")
