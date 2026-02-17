@@ -31,9 +31,6 @@ CRON_FILE="/etc/cron.d/graph-cron"
 # Set proper permissions
 chmod 0644 "${CRON_FILE}"
 
-# Apply cron job
-crontab "${CRON_FILE}"
-
 # Create necessary directories (all in tmpfs)
 WEB_ROOT="${WEB_ROOT:-/usr/share/nginx/html}"
 LAST_SUCCESS_FILE="${LAST_SUCCESS_FILE:-/opt/graph_automation/last_success.json}"
