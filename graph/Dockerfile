@@ -1,9 +1,9 @@
 # Use Playwright's official image which includes browsers
 FROM mcr.microsoft.com/playwright/python:v1.58.0-jammy
 
-# Install cron
+# Install dependencies
 RUN apt-get update && \
-    apt-get install -y cron fonts-dejavu-core && \
+    apt-get install -y tzdata fonts-dejavu-core && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

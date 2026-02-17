@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 import json
 import subprocess
+import pytz
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 # --- CONFIGURATION ---
@@ -50,6 +51,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+# Quebec Timezone (for local timestamps)
+QUEBEC_TZ = pytz.timezone("America/Montreal")
 
 
 def parse_args():
@@ -97,13 +101,12 @@ def load_status_data():
 
 
 def save_last_success_time():
-    tz_name = os.environ.get("TZ", "America/Montreal")
     os.makedirs(os.path.dirname(LAST_SUCCESS_FILE), exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     timestamp = datetime.now().astimezone().isoformat()
     data = {
         "last_successful_run": timestamp,
-        "timezone": tz_name,
+        "timezone": "America/Montreal",
         "stale_applied": False,
     }
     with open(LAST_SUCCESS_FILE, "w") as f:
@@ -365,8 +368,8 @@ if __name__ == "__main__":
             os.environ.get("BACKUP_INTERVAL_HOURS", "24")
         )  # daily
 
-        # Set up scheduler
-        scheduler = BlockingScheduler()
+        # Set up scheduler with Quebec timezone
+        scheduler = BlockingScheduler(timezone=QUEBEC_TZ)
 
         # Schedule graph download
         scheduler.add_job(

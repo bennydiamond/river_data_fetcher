@@ -9,7 +9,6 @@ echo ""
 GRAPH_ARGS=()
 echo "Configuration:"
 echo "  LOG_LEVEL=${LOG_LEVEL:-INFO}"
-echo "  TZ=${TZ:-America/Montreal}"
 echo "  GRAPH_INTERVAL_MINUTES=${GRAPH_INTERVAL_MINUTES:-120}"
 echo "  BACKUP_INTERVAL_HOURS=${BACKUP_INTERVAL_HOURS:-24}"
 
