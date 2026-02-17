@@ -358,8 +358,12 @@ if __name__ == "__main__":
         logger.info("Starting graph downloader with embedded scheduler")
 
         # Get intervals from env (in minutes, defaults match original cron)
-        graph_interval_minutes = int(os.environ.get("GRAPH_INTERVAL_MINUTES", "120"))  # 2 hours
-        backup_interval_hours = int(os.environ.get("BACKUP_INTERVAL_HOURS", "24"))  # daily
+        graph_interval_minutes = int(
+            os.environ.get("GRAPH_INTERVAL_MINUTES", "120")
+        )  # 2 hours
+        backup_interval_hours = int(
+            os.environ.get("BACKUP_INTERVAL_HOURS", "24")
+        )  # daily
 
         # Set up scheduler
         scheduler = BlockingScheduler()

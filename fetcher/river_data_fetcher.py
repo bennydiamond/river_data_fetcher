@@ -447,7 +447,9 @@ def run_fetcher(runtime_config, ha_headers):
             runtime_config["data_url"],
         )
     else:
-        logger.warning("Failed to fetch or parse river data. Not sending to Home Assistant.")
+        logger.warning(
+            "Failed to fetch or parse river data. Not sending to Home Assistant."
+        )
 
 
 if __name__ == "__main__":
