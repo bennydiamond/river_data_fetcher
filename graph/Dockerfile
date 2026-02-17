@@ -3,7 +3,7 @@ FROM mcr.microsoft.com/playwright/python:v1.58.0-jammy
 
 # Install dependencies
 RUN apt-get update && \
-    apt-get install -y tzdata fonts-dejavu-core && \
+    apt-get install -y fonts-dejavu-core && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
