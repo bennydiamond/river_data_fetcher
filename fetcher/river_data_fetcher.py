@@ -6,6 +6,7 @@ import pytz
 import os
 import re
 import logging
+from apscheduler.schedulers.blocking import BlockingScheduler
 
 # --- LOGGING CONFIGURATION ---
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -427,8 +428,32 @@ def send_to_home_assistant(
         logger.error(f"Error sending river height data to Home Assistant: {e}")
 
 
+def run_fetcher(runtime_config, ha_headers):
+    """Execute fetch, parse, and send logic once."""
+    parsed_data = fetch_and_parse_data(
+        runtime_config["data_url"],
+        runtime_config["station_number"],
+        runtime_config["station_name_prefix"],
+        runtime_config["river_name_override"],
+        runtime_config["river_name_fallback"],
+    )
+    if parsed_data:
+        send_to_home_assistant(
+            parsed_data,
+            runtime_config["ha_api_base_url"],
+            ha_headers,
+            runtime_config["ha_flow_entity_id"],
+            runtime_config["ha_height_entity_id"],
+            runtime_config["data_url"],
+        )
+    else:
+        logger.warning(
+            "Failed to fetch or parse river data. Not sending to Home Assistant."
+        )
+
+
 if __name__ == "__main__":
-    logger.info("Starting river data fetch script")
+    logger.info("Starting river data fetch script with embedded scheduler")
 
     try:
         import pytz
@@ -447,23 +472,25 @@ if __name__ == "__main__":
         "Content-Type": "application/json",
     }
 
-    parsed_data = fetch_and_parse_data(
-        runtime_config["data_url"],
-        runtime_config["station_number"],
-        runtime_config["station_name_prefix"],
-        runtime_config["river_name_override"],
-        runtime_config["river_name_fallback"],
-    )
-    if parsed_data:
-        send_to_home_assistant(
-            parsed_data,
-            runtime_config["ha_api_base_url"],
-            ha_headers,
-            runtime_config["ha_flow_entity_id"],
-            runtime_config["ha_height_entity_id"],
-            runtime_config["data_url"],
-        )
-    else:
-        print("Failed to fetch or parse river data. Not sending to Home Assistant.")
+    # Get interval from env variable (in minutes, default 10)
+    interval_minutes = int(os.environ.get("FETCHER_INTERVAL_MINUTES", "10"))
 
-    print("--- River data fetch script finished ---")
+    # Set up scheduler
+    scheduler = BlockingScheduler()
+    scheduler.add_job(
+        run_fetcher,
+        "interval",
+        minutes=interval_minutes,
+        args=[runtime_config, ha_headers],
+        id="fetcher_job",
+    )
+
+    logger.info(f"Scheduled fetcher to run every {interval_minutes} minutes")
+    logger.info("Scheduler starting...")
+
+    # Run initial fetch immediately
+    logger.info("Running initial fetch...")
+    run_fetcher(runtime_config, ha_headers)
+
+    # Start scheduler (blocking)
+    scheduler.start()

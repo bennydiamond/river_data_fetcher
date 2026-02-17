@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 import json
 import subprocess
+from apscheduler.schedulers.blocking import BlockingScheduler
 
 # --- CONFIGURATION ---
 DEFAULT_STATION_NUMBER = "030315"
@@ -354,6 +355,46 @@ if __name__ == "__main__":
         check_and_overlay_stale_data()
         logger.info("--- Stale check finished ---")
     else:
-        logger.info("--- Starting graph download script ---")
+        logger.info("Starting graph downloader with embedded scheduler")
+
+        # Get intervals from env (in minutes, defaults match original cron)
+        graph_interval_minutes = int(
+            os.environ.get("GRAPH_INTERVAL_MINUTES", "120")
+        )  # 2 hours
+        backup_interval_hours = int(
+            os.environ.get("BACKUP_INTERVAL_HOURS", "24")
+        )  # daily
+
+        # Set up scheduler
+        scheduler = BlockingScheduler()
+
+        # Schedule graph download
+        scheduler.add_job(
+            lambda: asyncio.run(download_graph_png(runtime_config["graph_url"])),
+            "interval",
+            minutes=graph_interval_minutes,
+            id="graph_download_job",
+        )
+
+        # Schedule backup
+        scheduler.add_job(
+            lambda: subprocess.run([BACKUP_SCRIPT], check=False),
+            "interval",
+            hours=backup_interval_hours,
+            id="backup_job",
+        )
+
+        logger.info(f"Scheduled graph download every {graph_interval_minutes} minutes")
+        logger.info(f"Scheduled backup every {backup_interval_hours} hours")
+        logger.info("Scheduler starting...")
+
+        # Run initial setup
+        logger.info("Restoring from backup if available...")
+        backup_if_missing()
+        check_and_overlay_stale_data()
+
+        logger.info("Running initial graph download...")
         asyncio.run(download_graph_png(runtime_config["graph_url"]))
-        logger.info("--- Script finished ---")
+
+        # Start scheduler (blocking)
+        scheduler.start()
