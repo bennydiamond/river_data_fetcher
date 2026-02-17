@@ -2,8 +2,10 @@
 FROM python:3.11-slim
 
 # Install dependencies (tzdata needed for APScheduler ZoneInfo support)
-RUN DEBIAN_FRONTEND=noninteractive TZ=America/Montreal apt-get update && \
-    apt-get install -y tzdata && \
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata && \
+    echo "America/Montreal" > /etc/timezone && \
+    ln -fs /usr/share/zoneinfo/America/Montreal /etc/localtime && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
