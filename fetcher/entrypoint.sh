@@ -41,9 +41,6 @@ echo "" >> /etc/cron.d/fetcher-cron
 # Set proper permissions
 chmod 0644 /etc/cron.d/fetcher-cron
 
-# Apply cron job
-crontab /etc/cron.d/fetcher-cron
-
 echo "Running initial fetch..."
 # Run immediately on startup
 python3 /app/river_data_fetcher.py "${FETCHER_ARGS[@]}" 2>&1 || echo "Initial run failed, but continuing..."
