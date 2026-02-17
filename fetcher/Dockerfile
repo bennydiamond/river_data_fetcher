@@ -1,8 +1,9 @@
 # Lightweight Python image for river data fetcher
 FROM python:3.11-slim
 
-# Install dependencies
-RUN apt-get update && \
+# Install dependencies (tzdata needed for APScheduler ZoneInfo support)
+RUN DEBIAN_FRONTEND=noninteractive TZ=America/Montreal apt-get update && \
+    apt-get install -y tzdata && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
