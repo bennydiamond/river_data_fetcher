@@ -1,9 +1,9 @@
 # Use Playwright's official image which includes browsers
 FROM mcr.microsoft.com/playwright/python:v1.58.0-jammy
 
-# Install dependencies
-RUN apt-get update && \
-    apt-get install -y fonts-dejavu-core && \
+# Install dependencies (tzdata needed for APScheduler ZoneInfo support, fonts for image overlays)
+RUN DEBIAN_FRONTEND=noninteractive TZ=America/Montreal apt-get update && \
+    apt-get install -y tzdata fonts-dejavu-core && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
