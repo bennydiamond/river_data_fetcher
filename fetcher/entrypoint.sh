@@ -9,7 +9,6 @@ echo ""
 FETCHER_ARGS=()
 echo "Configuration:"
 echo "  LOG_LEVEL=${LOG_LEVEL:-INFO}"
-echo "  TZ=${TZ:-America/Montreal}"
 echo "  FETCHER_INTERVAL_MINUTES=${FETCHER_INTERVAL_MINUTES:-10}"
 
 if [ -n "${STATION_NUMBER:-}" ]; then

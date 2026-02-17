@@ -1,9 +1,9 @@
 # Lightweight Python image for river data fetcher
 FROM python:3.11-slim
 
-# Install cron
+# Install dependencies
 RUN apt-get update && \
-    apt-get install -y cron && \
+    apt-get install -y tzdata && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

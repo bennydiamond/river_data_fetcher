@@ -253,12 +253,10 @@ def fetch_and_parse_data(
         if flow_str.count(",") == 1 and flow_str.count(".") == 0:
             flow_str = flow_str.replace(",", ".")
 
-        quebec_tz = pytz.timezone("America/Montreal")
-
         datetime_naive = datetime.strptime(
             f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S"
         )
-        datetime_aware_local_quebec = quebec_tz.localize(datetime_naive)
+        datetime_aware_local_quebec = QUEBEC_TZ.localize(datetime_naive)
 
         datetime_utc = datetime_aware_local_quebec.astimezone(pytz.utc)
 
@@ -475,8 +473,8 @@ if __name__ == "__main__":
     # Get interval from env variable (in minutes, default 10)
     interval_minutes = int(os.environ.get("FETCHER_INTERVAL_MINUTES", "10"))
 
-    # Set up scheduler
-    scheduler = BlockingScheduler()
+    # Set up scheduler with timezone from environment
+    scheduler = BlockingScheduler(timezone=QUEBEC_TZ)
     scheduler.add_job(
         run_fetcher,
         "interval",

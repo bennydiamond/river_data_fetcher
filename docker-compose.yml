@@ -19,9 +19,8 @@ services:
     networks:
       - river-network
     environment:
-      - TZ=${TZ:-America/Montreal}
-      # Configure cron schedule (default: every 10 minutes)
-      - FETCHER_CRON_SCHEDULE=${FETCHER_CRON_SCHEDULE:-*/10 * * * *}
+      # Configure scheduler interval (default: every 10 minutes)
+      - FETCHER_INTERVAL_MINUTES=${FETCHER_INTERVAL_MINUTES:-10}
       # Configure HA token via environment variable (recommended for Docker)
       - HA_TOKEN=${HA_TOKEN:-}
       # Station configuration
@@ -79,13 +78,13 @@ services:
     networks:
       - river-network
     environment:
-      - TZ=${TZ:-America/Montreal}
       # Station configuration
       - STATION_NUMBER=${STATION_NUMBER:-030315}
       # Optional override for graph URL
       - GRAPH_URL=${GRAPH_URL:-}
-      # Configure cron schedule (default: every 2 hours at :05 to avoid collision with fetcher)
-      - GRAPH_CRON_SCHEDULE=${GRAPH_CRON_SCHEDULE:-5 */2 * * *}
+      # Configure scheduler intervals
+      - GRAPH_INTERVAL_MINUTES=${GRAPH_INTERVAL_MINUTES:-120}
+      - BACKUP_INTERVAL_HOURS=${BACKUP_INTERVAL_HOURS:-24}
       # Log level: DEBUG, INFO, WARNING, ERROR
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # Prevent runtime file writes in container filesystem
