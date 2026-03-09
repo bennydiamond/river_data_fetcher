@@ -175,12 +175,12 @@ def fetch_and_parse_data(
                 )
                 return None
 
-    # Explicitly set encoding to UTF-8
     response.encoding = "utf-8"
     soup = BeautifulSoup(response.text, "html.parser")
 
     data_table = None
     header_row = None
+    is_hne = False  # Track if we found HNE in the header
 
     tables = soup.find_all("table")
 
@@ -193,9 +193,10 @@ def fetch_and_parse_data(
                 for td_idx in [0, 1, 2, 3]:
                     font_tag = td_elements[td_idx].find("font")
                     if font_tag:
-                        text_content = font_tag.get_text(strip=True).replace(
-                            "\xa0", " "
-                        )
+                        # Use separator=" " to catch (HNE) if it's on a new line inside the font tag
+                        text_content = font_tag.get_text(
+                            separator=" ", strip=True
+                        ).replace("\xa0", " ")
                         header_texts_from_font_tags.append(text_content)
                     else:
                         header_texts_from_font_tags.append("NO FONT TAG FOUND")
@@ -208,17 +209,15 @@ def fetch_and_parse_data(
                 ):
                     header_row = row
                     data_table = table
+                    # Check if "HNE" appears in the time column header
+                    if "HNE" in header_texts_from_font_tags[1]:
+                        is_hne = True
                     break
-            else:
-                pass  # Row has less than 4 cells, skipping header check
-
         if data_table:
             break
 
     if not data_table or not header_row:
-        logger.error(
-            "Could not find the main data table or its header row with expected column headers."
-        )
+        logger.error("Could not find the main data table or its header row.")
         return None
 
     data_rows = data_table.find_all("tr")[
@@ -229,14 +228,11 @@ def fetch_and_parse_data(
         logger.error("No data rows found in the table after skipping header.")
         return None
 
-    # Extract the latest (first) data row as requested
     latest_row = data_rows[0]
     cells = latest_row.find_all("td")
 
     if len(cells) < 4:
-        logger.error(
-            f"Not enough cells found in the latest row. Expected at least 4, got {len(cells)}"
-        )
+        logger.error(f"Not enough cells found. Expected at least 4, got {len(cells)}")
         return None
 
     try:
@@ -253,12 +249,23 @@ def fetch_and_parse_data(
         if flow_str.count(",") == 1 and flow_str.count(".") == 0:
             flow_str = flow_str.replace(",", ".")
 
+        # --- UPDATED TIMEZONE HANDLING ---
         datetime_naive = datetime.strptime(
             f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S"
         )
-        datetime_aware_local_quebec = QUEBEC_TZ.localize(datetime_naive)
+
+        if is_hne:
+            # Table is in HNE (UTC-5), convert to Montreal (which handles EDT/HAE correctly)
+            hne_tz = pytz.FixedOffset(-300)
+            datetime_aware_hne = hne_tz.localize(datetime_naive)
+            datetime_aware_local_quebec = datetime_aware_hne.astimezone(QUEBEC_TZ)
+            logger.debug("Adjusted HNE time to local Quebec time.")
+        else:
+            # Fallback to current system logic
+            datetime_aware_local_quebec = QUEBEC_TZ.localize(datetime_naive)
 
         datetime_utc = datetime_aware_local_quebec.astimezone(pytz.utc)
+        # ---------------------------------
 
         # Extract station ID
         station_name_tag = soup.find("span", id="spnNoStation")
@@ -338,11 +345,12 @@ def fetch_and_parse_data(
             "height_state_class": "measurement",
         }
         logger.info(
-            "Successfully parsed data: Date=%s, Time=%s, Height=%sm, Flow=%sm³/s",
+            "Successfully parsed data: Date=%s, Time=%s, Height=%sm, Flow=%sm³/s (HNE Identified: %s)",
             date_str,
             time_str,
             float(height_str),
             float(flow_str),
+            is_hne,
         )
         return parsed_data
 
