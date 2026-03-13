@@ -24,7 +24,7 @@ jobs:
         run: pip install ruff
 
       - name: Ruff lint
-        run: ruff check fetcher graph
+        run: ruff check fetcher graph unified_entrypoint.py
 
       - name: Ruff format check
-        run: ruff format --check fetcher graph
+        run: ruff format --check fetcher graph unified_entrypoint.py

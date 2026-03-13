@@ -10,12 +10,17 @@ import json
 import subprocess
 import pytz
 from apscheduler.schedulers.blocking import BlockingScheduler
+import csv
+import requests  # Added for HA API push
 
 # --- CONFIGURATION ---
 DEFAULT_STATION_NUMBER = "030315"
 DEFAULT_GRAPH_URL_TEMPLATE = (
     "https://www.cehq.gouv.qc.ca/suivihydro/graphique.asp?noStation={station_number}"
 )
+DEFAULT_HA_API_BASE_URL = "http://192.168.0.250:8123/api"
+DEFAULT_HA_ENTITY_ID = "sensor.riviere_noire_flood_forecast"
+
 LAST_SUCCESS_FILE = os.environ.get(
     "LAST_SUCCESS_FILE", "/opt/graph_automation/last_success.json"
 )
@@ -30,6 +35,12 @@ FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 TIMEOUT_MS = 60000  # 60 seconds
 FETCH_RETRY_COUNT = int(os.environ.get("FETCH_RETRY_COUNT", "3"))
 FETCH_RETRY_DELAY_SECONDS = int(os.environ.get("FETCH_RETRY_DELAY_SECONDS", "10"))
+
+# Flood Prediction Settings
+FLOW_WARNING_THRESHOLD = float(
+    os.environ.get("PREDICTION_THRESHOLD_M3S", "100.0")
+)  # m³/s
+PREDICTION_PROCESSING_ENABLED = FLOW_WARNING_THRESHOLD > 0.0
 
 # Font & Text Settings
 FONT_SIZE_BASE_RATIO_WIDTH = 0.05
@@ -52,29 +63,52 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Quebec Timezone (for local timestamps)
+# Quebec Timezone
 QUEBEC_TZ = pytz.timezone("America/Montreal")
+
+
+# --- HA TOKEN LOADER ---
+def load_ha_token():
+    token = os.environ.get("HA_TOKEN")
+    if token:
+        logger.info("Using HA token from environment variable")
+        return token.strip()
+
+    try:
+        script_dir = os.path.dirname(__file__)
+        token_file_path = os.path.join(script_dir, "ha_token.txt")
+        root_token_file_path = os.path.abspath(
+            os.path.join(script_dir, "..", "ha_token.txt")
+        )
+        for candidate_path in (token_file_path, root_token_file_path):
+            if not os.path.exists(candidate_path):
+                continue
+            with open(candidate_path, "r") as f:
+                token = f.read().strip()
+                if not token:
+                    raise ValueError("Token file is empty.")
+                logger.info(f"Using HA token from file: {candidate_path}")
+                return token
+    except Exception as e:
+        logger.error(f"Error reading HA token: {e}")
+        exit(1)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Download river graph and publish artifacts"
+        description="Download river graph, predictions, and push to HA"
     )
     parser.add_argument(
         "--station-number",
         default=os.environ.get("STATION_NUMBER", DEFAULT_STATION_NUMBER),
-        help="Station number (env: STATION_NUMBER)",
     )
+    parser.add_argument("--graph-url", default=os.environ.get("GRAPH_URL"))
     parser.add_argument(
-        "--graph-url",
-        default=os.environ.get("GRAPH_URL"),
-        help="Override graph URL (env: GRAPH_URL)",
+        "--ha-api-base-url",
+        default=os.environ.get("HA_API_BASE_URL", DEFAULT_HA_API_BASE_URL),
     )
-    parser.add_argument(
-        "--check-stale",
-        action="store_true",
-        help="Check and overlay stale data without downloading",
-    )
+    parser.add_argument("--ha-token", default=os.environ.get("HA_TOKEN"))
+    parser.add_argument("--check-stale", action="store_true")
     return parser.parse_args()
 
 
@@ -86,6 +120,8 @@ def build_runtime_config(args):
     return {
         "station_number": station_number,
         "graph_url": graph_url,
+        "ha_api_base_url": args.ha_api_base_url.strip(),
+        "ha_entity_id": DEFAULT_HA_ENTITY_ID,
     }
 
 
@@ -143,8 +179,6 @@ def add_warning_overlay(img_path, warning_text):
                 font = ImageFont.truetype(FONT_PATH, current_font_size)
             except IOError:
                 font = ImageFont.load_default()
-                if font == ImageFont.load_default():
-                    break
             try:
                 text_bbox = draw.textbbox((0, 0), warning_text, font=font)
                 text_width = text_bbox[2] - text_bbox[0]
@@ -263,9 +297,176 @@ def backup_if_missing():
             logger.warning(f"Initial backup failed: {e}")
 
 
-# --- MAIN FUNCTION ---
-async def download_graph_png(graph_url):
-    url = graph_url
+def send_forecast_to_home_assistant(forecast_data, runtime_config, ha_headers):
+    """Pushes the forecast payload to Home Assistant."""
+    if not forecast_data:
+        return
+
+    # Prepare HA payload with event_count as the primary state
+    payload = {
+        "state": forecast_data["event_count"],
+        "attributes": {
+            "friendly_name": "Prévisions Rivière Noire",
+            "icon": "mdi:alert-water",
+            "state_class": "measurement",
+            "max_predicted_flow": forecast_data["max_predicted_flow"],
+            "max_predicted_flow_unit": "m³/s",
+            "events": forecast_data["events"],
+            "critical_date": forecast_data["critical_date"],
+            "threshold_m3s": forecast_data["threshold_m3s"],
+            "csv_source_url": forecast_data.get("csv_source_url"),
+            "last_updated": forecast_data["timestamp"],
+        },
+    }
+
+    ha_url = (
+        f"{runtime_config['ha_api_base_url']}/states/{runtime_config['ha_entity_id']}"
+    )
+
+    logger.debug(
+        f"Sending forecast data to Home Assistant: {runtime_config['ha_entity_id']}"
+    )
+    try:
+        response = requests.post(ha_url, json=payload, headers=ha_headers, timeout=10)
+        response.raise_for_status()
+        logger.info(
+            f"Forecast successfully pushed to HA. Status: {response.status_code}"
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error sending forecast to Home Assistant: {e}")
+
+
+def process_csv_prediction(csv_buffer, csv_source_url=None):
+    """Parses the CSV, extracts events, saves locally, and returns the payload dict."""
+    csv_buffer.seek(0)
+    text_data = csv_buffer.read().decode("latin-1", errors="replace")
+    reader = csv.reader(text_data.splitlines())
+    next(reader, None)
+
+    raw_events = []
+    current_event = None
+    CEHQ_TZ = pytz.timezone("EST")
+    now_utc = datetime.now(pytz.utc)
+    now_local = datetime.now(QUEBEC_TZ)
+
+    def parse_float(val_str):
+        try:
+            return float(val_str.strip())
+        except ValueError:
+            return None
+
+    for row in reader:
+        if len(row) < 8:
+            continue
+        date_str = row[0].strip()
+        try:
+            row_time_aware = CEHQ_TZ.localize(
+                datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+            )
+        except ValueError:
+            continue
+
+        if row_time_aware < now_utc:
+            continue
+
+        flow_vals = [
+            parse_float(row[idx]) for idx in [4, 5] if parse_float(row[idx]) is not None
+        ]
+        row_max = max(flow_vals) if flow_vals else 0.0
+
+        ic_low = parse_float(row[6])
+        ic_high = parse_float(row[7])
+
+        if row_max >= FLOW_WARNING_THRESHOLD:
+            if current_event is None:
+                current_event = {
+                    "start_time": date_str,
+                    "peak_flow": row_max,
+                    "peak_time": date_str,
+                    "ic_low_at_peak": ic_low,
+                    "ic_high_at_peak": ic_high,
+                }
+            else:
+                if row_max > current_event["peak_flow"]:
+                    current_event.update(
+                        {
+                            "peak_flow": row_max,
+                            "peak_time": date_str,
+                            "ic_low_at_peak": ic_low,
+                            "ic_high_at_peak": ic_high,
+                        }
+                    )
+        else:
+            if current_event is not None:
+                current_event["end_time"] = date_str
+                raw_events.append(current_event)
+                current_event = None
+
+    if current_event is not None:
+        current_event["end_time"] = "Fin des prévisions"
+        raw_events.append(current_event)
+
+    # Merge events < 4 hours apart
+    merged_events = []
+    for ev in raw_events:
+        if not merged_events:
+            merged_events.append(ev)
+            continue
+        last_ev = merged_events[-1]
+        if last_ev["end_time"] == "Fin des prévisions":
+            merged_events.append(ev)
+            continue
+        try:
+            end_t = CEHQ_TZ.localize(
+                datetime.strptime(last_ev["end_time"], "%Y-%m-%d %H:%M:%S")
+            )
+            start_t = CEHQ_TZ.localize(
+                datetime.strptime(ev["start_time"], "%Y-%m-%d %H:%M:%S")
+            )
+            if (start_t - end_t) <= timedelta(hours=4):
+                if ev["peak_flow"] > last_ev["peak_flow"]:
+                    last_ev.update(
+                        {
+                            "peak_flow": ev["peak_flow"],
+                            "peak_time": ev["peak_time"],
+                            "ic_low_at_peak": ev["ic_low_at_peak"],
+                            "ic_high_at_peak": ev["ic_high_at_peak"],
+                        }
+                    )
+                last_ev["end_time"] = ev["end_time"]
+            else:
+                merged_events.append(ev)
+        except ValueError:
+            merged_events.append(ev)
+
+    absolute_max = max((ev["peak_flow"] for ev in merged_events), default=0.0)
+    critical_date = next(
+        (ev["peak_time"] for ev in merged_events if ev["peak_flow"] == absolute_max),
+        None,
+    )
+
+    payload = {
+        "high_flow_predicted": len(merged_events) > 0,
+        "max_predicted_flow": absolute_max,
+        "critical_date": critical_date,
+        "event_count": len(merged_events),
+        "events": merged_events,
+        "threshold_m3s": FLOW_WARNING_THRESHOLD,
+        "csv_source_url": csv_source_url,
+        "timestamp": now_local.isoformat(),
+    }
+
+    # Save locally as a backup / web asset
+    output_file = os.path.join(OUTPUT_DIR, "flood_prediction.json")
+    with open(output_file, "w") as f:
+        json.dump(payload, f, indent=2)
+
+    return payload
+
+
+# --- MAIN PLAYWRIGHT FETCH ROUTINE ---
+async def download_graph_png(runtime_config, ha_headers):
+    url = runtime_config["graph_url"]
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     for attempt in range(1, FETCH_RETRY_COUNT + 1):
@@ -287,7 +488,7 @@ async def download_graph_png(graph_url):
                 await page.wait_for_selector("#container3", state="visible")
                 logger.info("Graph container visible.")
 
-                # Menu Interaction
+                # --- 1. DOWNLOAD PNG ---
                 menu_btn_sel = 'button.highcharts-a11y-proxy-element[aria-label*="Détail des prochains jours"]'
                 menu_button = await page.wait_for_selector(
                     menu_btn_sel, state="visible"
@@ -324,8 +525,46 @@ async def download_graph_png(graph_url):
                     save_last_success_time()
                     backup_if_missing()
 
+                if PREDICTION_PROCESSING_ENABLED:
+                    # --- 2. DOWNLOAD CSV ---
+                    logger.info("Re-opening menu to download CSV...")
+                    # The menu closes after the first click, so we open it again
+                    await menu_button.click()
+
+                    csv_text = "Télécharger en CSV"
+                    await page.wait_for_selector(f"text={csv_text}", state="visible")
+                    await page.wait_for_timeout(1000)
+
+                    async with page.expect_download(timeout=TIMEOUT_MS) as csv_info:
+                        logger.info(f"Clicking '{csv_text}'...")
+                        await page.click(f"text={csv_text}", force=True)
+
+                    csv_download = await csv_info.value
+                    csv_temp_path = await csv_download.path()
+                    csv_source_url = csv_download.url
+
+                    logger.info("CSV downloaded. Parsing prediction data...")
+                    with open(csv_temp_path, "rb") as f:
+                        csv_buffer = io.BytesIO(f.read())
+
+                    # Process the CSV and get the payload dictionary back
+                    forecast_payload = process_csv_prediction(
+                        csv_buffer,
+                        csv_source_url=csv_source_url or runtime_config["graph_url"],
+                    )
+
+                    # Push the dictionary directly to Home Assistant
+                    send_forecast_to_home_assistant(
+                        forecast_payload, runtime_config, ha_headers
+                    )
+                else:
+                    logger.info(
+                        "Prediction processing disabled because PREDICTION_THRESHOLD_M3S=0."
+                    )
+
                 await browser.close()
                 return
+
         except Exception as e:
             if attempt < FETCH_RETRY_COUNT:
                 logger.warning(
@@ -353,12 +592,29 @@ if __name__ == "__main__":
     args = parse_args()
     runtime_config = build_runtime_config(args)
 
+    # Only needed when prediction processing (and forecast sensor push) is enabled.
+    if PREDICTION_PROCESSING_ENABLED:
+        ha_long_lived_token = args.ha_token or load_ha_token()
+        ha_headers = {
+            "Authorization": f"Bearer {ha_long_lived_token}",
+            "Content-Type": "application/json",
+        }
+    else:
+        ha_headers = {}
+
     if args.check_stale:
         logger.info("--- Checking for stale cached data ---")
         check_and_overlay_stale_data()
         logger.info("--- Stale check finished ---")
     else:
         logger.info("Starting graph downloader with embedded scheduler")
+        if PREDICTION_PROCESSING_ENABLED:
+            logger.info(
+                "Prediction processing enabled with threshold %.3f m3/s.",
+                FLOW_WARNING_THRESHOLD,
+            )
+        else:
+            logger.info("Prediction processing disabled (PREDICTION_THRESHOLD_M3S=0).")
 
         # Get intervals from env (in minutes, defaults match original cron)
         graph_interval_minutes = int(
@@ -373,7 +629,7 @@ if __name__ == "__main__":
 
         # Schedule graph download
         scheduler.add_job(
-            lambda: asyncio.run(download_graph_png(runtime_config["graph_url"])),
+            lambda: asyncio.run(download_graph_png(runtime_config, ha_headers)),
             "interval",
             minutes=graph_interval_minutes,
             id="graph_download_job",
@@ -387,7 +643,9 @@ if __name__ == "__main__":
             id="backup_job",
         )
 
-        logger.info(f"Scheduled graph download every {graph_interval_minutes} minutes")
+        logger.info(
+            f"Scheduled graph/csv download every {graph_interval_minutes} minutes"
+        )
         logger.info(f"Scheduled backup every {backup_interval_hours} hours")
         logger.info("Scheduler starting...")
 
@@ -396,8 +654,8 @@ if __name__ == "__main__":
         backup_if_missing()
         check_and_overlay_stale_data()
 
-        logger.info("Running initial graph download...")
-        asyncio.run(download_graph_png(runtime_config["graph_url"]))
+        logger.info("Running initial graph and csv download...")
+        asyncio.run(download_graph_png(runtime_config, ha_headers))
 
         # Start scheduler (blocking)
         scheduler.start()

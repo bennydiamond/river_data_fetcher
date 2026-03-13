@@ -1,10 +1,8 @@
 version: '3.8'
 
 services:
-  river-data-fetcher:
-    build: ./fetcher
-    image: river-data-fetcher:local
-
-  graph-downloader:
-    build: ./graph
-    image: river-graph-downloader:local
+  river-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile.unified
+    image: river-monitor:local
