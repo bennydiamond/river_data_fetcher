@@ -15,7 +15,9 @@ class ManagedScript:
 
 
 class ScriptRunner:
-    def __init__(self, script: ManagedScript, restart_on_failure: bool, restart_delay: int):
+    def __init__(
+        self, script: ManagedScript, restart_on_failure: bool, restart_delay: int
+    ):
         self.script = script
         self.restart_on_failure = restart_on_failure
         self.restart_delay = restart_delay
@@ -36,7 +38,10 @@ class ScriptRunner:
         )
         self._io_thread = threading.Thread(target=self._stream_output, daemon=True)
         self._io_thread.start()
-        print(f"[manager] started '{self.script.name}' (pid={self.process.pid})", flush=True)
+        print(
+            f"[manager] started '{self.script.name}' (pid={self.process.pid})",
+            flush=True,
+        )
 
     def _stream_output(self) -> None:
         if not self.process or not self.process.stdout:
