@@ -313,6 +313,7 @@ def send_forecast_to_home_assistant(forecast_data, runtime_config, ha_headers):
             "events": forecast_data["events"],
             "critical_date": forecast_data["critical_date"],
             "threshold_m3s": forecast_data["threshold_m3s"],
+            "csv_source_url": forecast_data.get("csv_source_url"),
             "last_updated": forecast_data["timestamp"],
         },
     }
@@ -334,7 +335,7 @@ def send_forecast_to_home_assistant(forecast_data, runtime_config, ha_headers):
         logger.error(f"Error sending forecast to Home Assistant: {e}")
 
 
-def process_csv_prediction(csv_buffer):
+def process_csv_prediction(csv_buffer, csv_source_url=None):
     """Parses the CSV, extracts events, saves locally, and returns the payload dict."""
     csv_buffer.seek(0)
     text_data = csv_buffer.read().decode("latin-1", errors="replace")
@@ -450,6 +451,7 @@ def process_csv_prediction(csv_buffer):
         "event_count": len(merged_events),
         "events": merged_events,
         "threshold_m3s": FLOW_WARNING_THRESHOLD,
+        "csv_source_url": csv_source_url,
         "timestamp": now_local.isoformat(),
     }
 
@@ -537,13 +539,17 @@ async def download_graph_png(runtime_config, ha_headers):
 
                 csv_download = await csv_info.value
                 csv_temp_path = await csv_download.path()
+                csv_source_url = csv_download.url
 
                 logger.info("CSV downloaded. Parsing prediction data...")
                 with open(csv_temp_path, "rb") as f:
                     csv_buffer = io.BytesIO(f.read())
 
                 # Process the CSV and get the payload dictionary back
-                forecast_payload = process_csv_prediction(csv_buffer)
+                forecast_payload = process_csv_prediction(
+                    csv_buffer,
+                    csv_source_url=csv_source_url or runtime_config["graph_url"],
+                )
 
                 # Push the dictionary directly to Home Assistant
                 send_forecast_to_home_assistant(
