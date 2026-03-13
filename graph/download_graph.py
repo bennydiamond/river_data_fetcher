@@ -40,6 +40,7 @@ FETCH_RETRY_DELAY_SECONDS = int(os.environ.get("FETCH_RETRY_DELAY_SECONDS", "10"
 FLOW_WARNING_THRESHOLD = float(
     os.environ.get("PREDICTION_THRESHOLD_M3S", "100.0")
 )  # m³/s
+PREDICTION_PROCESSING_ENABLED = FLOW_WARNING_THRESHOLD > 0.0
 
 # Font & Text Settings
 FONT_SIZE_BASE_RATIO_WIDTH = 0.05
@@ -524,37 +525,42 @@ async def download_graph_png(runtime_config, ha_headers):
                     save_last_success_time()
                     backup_if_missing()
 
-                # --- 2. DOWNLOAD CSV ---
-                logger.info("Re-opening menu to download CSV...")
-                # The menu closes after the first click, so we open it again
-                await menu_button.click()
+                if PREDICTION_PROCESSING_ENABLED:
+                    # --- 2. DOWNLOAD CSV ---
+                    logger.info("Re-opening menu to download CSV...")
+                    # The menu closes after the first click, so we open it again
+                    await menu_button.click()
 
-                csv_text = "Télécharger en CSV"
-                await page.wait_for_selector(f"text={csv_text}", state="visible")
-                await page.wait_for_timeout(1000)
+                    csv_text = "Télécharger en CSV"
+                    await page.wait_for_selector(f"text={csv_text}", state="visible")
+                    await page.wait_for_timeout(1000)
 
-                async with page.expect_download(timeout=TIMEOUT_MS) as csv_info:
-                    logger.info(f"Clicking '{csv_text}'...")
-                    await page.click(f"text={csv_text}", force=True)
+                    async with page.expect_download(timeout=TIMEOUT_MS) as csv_info:
+                        logger.info(f"Clicking '{csv_text}'...")
+                        await page.click(f"text={csv_text}", force=True)
 
-                csv_download = await csv_info.value
-                csv_temp_path = await csv_download.path()
-                csv_source_url = csv_download.url
+                    csv_download = await csv_info.value
+                    csv_temp_path = await csv_download.path()
+                    csv_source_url = csv_download.url
 
-                logger.info("CSV downloaded. Parsing prediction data...")
-                with open(csv_temp_path, "rb") as f:
-                    csv_buffer = io.BytesIO(f.read())
+                    logger.info("CSV downloaded. Parsing prediction data...")
+                    with open(csv_temp_path, "rb") as f:
+                        csv_buffer = io.BytesIO(f.read())
 
-                # Process the CSV and get the payload dictionary back
-                forecast_payload = process_csv_prediction(
-                    csv_buffer,
-                    csv_source_url=csv_source_url or runtime_config["graph_url"],
-                )
+                    # Process the CSV and get the payload dictionary back
+                    forecast_payload = process_csv_prediction(
+                        csv_buffer,
+                        csv_source_url=csv_source_url or runtime_config["graph_url"],
+                    )
 
-                # Push the dictionary directly to Home Assistant
-                send_forecast_to_home_assistant(
-                    forecast_payload, runtime_config, ha_headers
-                )
+                    # Push the dictionary directly to Home Assistant
+                    send_forecast_to_home_assistant(
+                        forecast_payload, runtime_config, ha_headers
+                    )
+                else:
+                    logger.info(
+                        "Prediction processing disabled because PREDICTION_THRESHOLD_M3S=0."
+                    )
 
                 await browser.close()
                 return
@@ -586,12 +592,15 @@ if __name__ == "__main__":
     args = parse_args()
     runtime_config = build_runtime_config(args)
 
-    # Initialize HA headers once on startup
-    ha_long_lived_token = args.ha_token or load_ha_token()
-    ha_headers = {
-        "Authorization": f"Bearer {ha_long_lived_token}",
-        "Content-Type": "application/json",
-    }
+    # Only needed when prediction processing (and forecast sensor push) is enabled.
+    if PREDICTION_PROCESSING_ENABLED:
+        ha_long_lived_token = args.ha_token or load_ha_token()
+        ha_headers = {
+            "Authorization": f"Bearer {ha_long_lived_token}",
+            "Content-Type": "application/json",
+        }
+    else:
+        ha_headers = {}
 
     if args.check_stale:
         logger.info("--- Checking for stale cached data ---")
@@ -599,6 +608,13 @@ if __name__ == "__main__":
         logger.info("--- Stale check finished ---")
     else:
         logger.info("Starting graph downloader with embedded scheduler")
+        if PREDICTION_PROCESSING_ENABLED:
+            logger.info(
+                "Prediction processing enabled with threshold %.3f m3/s.",
+                FLOW_WARNING_THRESHOLD,
+            )
+        else:
+            logger.info("Prediction processing disabled (PREDICTION_THRESHOLD_M3S=0).")
 
         # Get intervals from env (in minutes, defaults match original cron)
         graph_interval_minutes = int(

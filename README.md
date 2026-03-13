@@ -204,6 +204,9 @@ The flood prediction trigger threshold is also configurable:
 PREDICTION_THRESHOLD_M3S=100.0
 ```
 
+Set `PREDICTION_THRESHOLD_M3S=0` to disable prediction CSV processing and
+forecast sensor emission to Home Assistant.
+
 Any predicted flow at or above this value is treated as a warning event.
 
 ### Home Assistant Entity IDs
