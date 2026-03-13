@@ -345,6 +345,8 @@ def process_csv_prediction(csv_buffer, csv_source_url=None):
 
     raw_events = []
     current_event = None
+    in_high_flow = None  # Tracks if the river is CURRENTLY above the threshold
+
     CEHQ_TZ = pytz.timezone("EST")
     now_utc = datetime.now(pytz.utc)
     now_local = datetime.now(QUEBEC_TZ)
@@ -366,19 +368,31 @@ def process_csv_prediction(csv_buffer, csv_source_url=None):
         except ValueError:
             continue
 
-        if row_time_aware < now_utc:
-            continue
-
+        # Extract values and determine if this specific row is above threshold
         flow_vals = [
             parse_float(row[idx]) for idx in [4, 5] if parse_float(row[idx]) is not None
         ]
         row_max = max(flow_vals) if flow_vals else 0.0
+        is_high = row_max >= FLOW_WARNING_THRESHOLD
 
+        # Initialize the state based on the very first valid row of the CSV
+        if in_high_flow is None:
+            in_high_flow = is_high
+
+        # --- PAST ROWS ---
+        # If the row is in the past, just track the state and move on
+        if row_time_aware < now_utc:
+            in_high_flow = is_high
+            continue
+
+        # --- FUTURE ROWS ---
         ic_low = parse_float(row[6])
         ic_high = parse_float(row[7])
 
-        if row_max >= FLOW_WARNING_THRESHOLD:
-            if current_event is None:
+        if is_high:
+            if not in_high_flow:
+                # We crossed from low to high IN THE FUTURE. Start a new prediction event.
+                in_high_flow = True
                 current_event = {
                     "start_time": date_str,
                     "peak_flow": row_max,
@@ -387,20 +401,27 @@ def process_csv_prediction(csv_buffer, csv_source_url=None):
                     "ic_high_at_peak": ic_high,
                 }
             else:
-                if row_max > current_event["peak_flow"]:
-                    current_event.update(
-                        {
-                            "peak_flow": row_max,
-                            "peak_time": date_str,
-                            "ic_low_at_peak": ic_low,
-                            "ic_high_at_peak": ic_high,
-                        }
-                    )
+                # We are already in high flow (either an ongoing event, or mid-predicted event)
+                if current_event is not None:
+                    # Only update peak if this is a newly predicted event
+                    if row_max > current_event["peak_flow"]:
+                        current_event.update(
+                            {
+                                "peak_flow": row_max,
+                                "peak_time": date_str,
+                                "ic_low_at_peak": ic_low,
+                                "ic_high_at_peak": ic_high,
+                            }
+                        )
         else:
-            if current_event is not None:
-                current_event["end_time"] = date_str
-                raw_events.append(current_event)
-                current_event = None
+            if in_high_flow:
+                # Flow dropped below threshold
+                in_high_flow = False
+                if current_event is not None:
+                    # End the predicted event
+                    current_event["end_time"] = date_str
+                    raw_events.append(current_event)
+                    current_event = None
 
     if current_event is not None:
         current_event["end_time"] = "Fin des prévisions"
