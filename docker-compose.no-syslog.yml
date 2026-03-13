@@ -1,11 +1,7 @@
 version: '3.8'
 
 services:
-  river-data-fetcher:
-    logging:
-      driver: "none"
-
-  graph-downloader:
+  river-monitor:
     logging:
       driver: "none"
 

@@ -605,7 +605,7 @@ if __name__ == "__main__":
 
         # Schedule graph download
         scheduler.add_job(
-            lambda: asyncio.run(download_graph_png(runtime_config["graph_url"])),
+            lambda: asyncio.run(download_graph_png(runtime_config, ha_headers)),
             "interval",
             minutes=graph_interval_minutes,
             id="graph_download_job",
