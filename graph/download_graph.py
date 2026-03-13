@@ -37,7 +37,9 @@ FETCH_RETRY_COUNT = int(os.environ.get("FETCH_RETRY_COUNT", "3"))
 FETCH_RETRY_DELAY_SECONDS = int(os.environ.get("FETCH_RETRY_DELAY_SECONDS", "10"))
 
 # Flood Prediction Settings
-FLOW_WARNING_THRESHOLD = 100.0  # m³/s
+FLOW_WARNING_THRESHOLD = float(
+    os.environ.get("PREDICTION_THRESHOLD_M3S", "100.0")
+)  # m³/s
 
 # Font & Text Settings
 FONT_SIZE_BASE_RATIO_WIDTH = 0.05
