@@ -314,7 +314,6 @@ def send_forecast_to_home_assistant(forecast_data, runtime_config, ha_headers):
             "events": forecast_data["events"],
             "critical_date": forecast_data["critical_date"],
             "threshold_m3s": forecast_data["threshold_m3s"],
-            "csv_source_url": forecast_data.get("csv_source_url"),
             "last_updated": forecast_data["timestamp"],
         },
     }
@@ -336,16 +335,55 @@ def send_forecast_to_home_assistant(forecast_data, runtime_config, ha_headers):
         logger.error(f"Error sending forecast to Home Assistant: {e}")
 
 
-def process_csv_prediction(csv_buffer, csv_source_url=None):
-    """Parses the CSV, extracts events, saves locally, and returns the payload dict."""
+def process_csv_prediction(csv_buffer):
+    """Parses the CSV dynamically, extracts events across the timeline,
+    merges them, filters out past events, and returns the payload dict."""
     csv_buffer.seek(0)
     text_data = csv_buffer.read().decode("latin-1", errors="replace")
     reader = csv.reader(text_data.splitlines())
-    next(reader, None)
+
+    # Extract and map headers using fuzzy substring matching
+    headers = next(reader, [])
+    headers_lower = [h.lower() for h in headers]
+
+    col_map = {
+        "date": 0,  # Default to first column if not found
+        "obs": None,
+        "court": None,
+        "moyen": None,
+        "ic_low": None,
+        "ic_high": None,
+    }
+
+    for i, h in enumerate(headers_lower):
+        if "date" in h or "time" in h:
+            col_map["date"] = i
+        elif "observ" in h:
+            col_map["obs"] = i
+        elif "court" in h:
+            col_map["court"] = i
+        elif "moyen" in h:
+            col_map["moyen"] = i
+        elif "low" in h or "bas" in h:
+            col_map["ic_low"] = i
+        elif "high" in h or "haut" in h:
+            col_map["ic_high"] = i
+
+    # Build the list of available flow columns to check
+    flow_indices = [
+        idx
+        for idx in [col_map["obs"], col_map["court"], col_map["moyen"]]
+        if idx is not None
+    ]
+
+    if not flow_indices:
+        logger.error(
+            "Could not find any flow columns ('observé', 'court', 'moyen') in the CSV headers."
+        )
+        return None
 
     raw_events = []
     current_event = None
-    in_high_flow = None  # Tracks if the river is CURRENTLY above the threshold
 
     CEHQ_TZ = pytz.timezone("EST")
     now_utc = datetime.now(pytz.utc)
@@ -357,42 +395,36 @@ def process_csv_prediction(csv_buffer, csv_source_url=None):
         except ValueError:
             return None
 
+    # STEP 1: Parse the ENTIRE timeline (Past and Future)
     for row in reader:
-        if len(row) < 8:
-            continue
-        date_str = row[0].strip()
-        try:
-            row_time_aware = CEHQ_TZ.localize(
-                datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-            )
-        except ValueError:
+        # Skip rows that don't have enough columns to contain our mapped indices
+        if not row or len(row) <= max(
+            idx for idx in col_map.values() if idx is not None
+        ):
             continue
 
-        # Extract values and determine if this specific row is above threshold
+        date_str = row[col_map["date"]].strip()
+
         flow_vals = [
-            parse_float(row[idx]) for idx in [4, 5] if parse_float(row[idx]) is not None
+            parse_float(row[idx])
+            for idx in flow_indices
+            if parse_float(row[idx]) is not None
         ]
         row_max = max(flow_vals) if flow_vals else 0.0
-        is_high = row_max >= FLOW_WARNING_THRESHOLD
 
-        # Initialize the state based on the very first valid row of the CSV
-        if in_high_flow is None:
-            in_high_flow = is_high
+        ic_low = (
+            parse_float(row[col_map["ic_low"]])
+            if col_map["ic_low"] is not None
+            else None
+        )
+        ic_high = (
+            parse_float(row[col_map["ic_high"]])
+            if col_map["ic_high"] is not None
+            else None
+        )
 
-        # --- PAST ROWS ---
-        # If the row is in the past, just track the state and move on
-        if row_time_aware < now_utc:
-            in_high_flow = is_high
-            continue
-
-        # --- FUTURE ROWS ---
-        ic_low = parse_float(row[6])
-        ic_high = parse_float(row[7])
-
-        if is_high:
-            if not in_high_flow:
-                # We crossed from low to high IN THE FUTURE. Start a new prediction event.
-                in_high_flow = True
+        if row_max >= FLOW_WARNING_THRESHOLD:
+            if current_event is None:
                 current_event = {
                     "start_time": date_str,
                     "peak_flow": row_max,
@@ -401,33 +433,26 @@ def process_csv_prediction(csv_buffer, csv_source_url=None):
                     "ic_high_at_peak": ic_high,
                 }
             else:
-                # We are already in high flow (either an ongoing event, or mid-predicted event)
-                if current_event is not None:
-                    # Only update peak if this is a newly predicted event
-                    if row_max > current_event["peak_flow"]:
-                        current_event.update(
-                            {
-                                "peak_flow": row_max,
-                                "peak_time": date_str,
-                                "ic_low_at_peak": ic_low,
-                                "ic_high_at_peak": ic_high,
-                            }
-                        )
+                if row_max > current_event["peak_flow"]:
+                    current_event.update(
+                        {
+                            "peak_flow": row_max,
+                            "peak_time": date_str,
+                            "ic_low_at_peak": ic_low,
+                            "ic_high_at_peak": ic_high,
+                        }
+                    )
         else:
-            if in_high_flow:
-                # Flow dropped below threshold
-                in_high_flow = False
-                if current_event is not None:
-                    # End the predicted event
-                    current_event["end_time"] = date_str
-                    raw_events.append(current_event)
-                    current_event = None
+            if current_event is not None:
+                current_event["end_time"] = date_str
+                raw_events.append(current_event)
+                current_event = None
 
     if current_event is not None:
         current_event["end_time"] = "Fin des prévisions"
         raw_events.append(current_event)
 
-    # Merge events < 4 hours apart
+    # STEP 2: Merge events < 4 hours apart across the entire timeline
     merged_events = []
     for ev in raw_events:
         if not merged_events:
@@ -460,20 +485,32 @@ def process_csv_prediction(csv_buffer, csv_source_url=None):
         except ValueError:
             merged_events.append(ev)
 
-    absolute_max = max((ev["peak_flow"] for ev in merged_events), default=0.0)
+    # STEP 3: Filter out any event that started in the PAST
+    future_events = []
+    for ev in merged_events:
+        try:
+            start_t = CEHQ_TZ.localize(
+                datetime.strptime(ev["start_time"], "%Y-%m-%d %H:%M:%S")
+            )
+            if start_t > now_utc:
+                future_events.append(ev)
+        except ValueError:
+            pass
+
+    # STEP 4: Build payload based ONLY on valid future events
+    absolute_max = max((ev["peak_flow"] for ev in future_events), default=0.0)
     critical_date = next(
-        (ev["peak_time"] for ev in merged_events if ev["peak_flow"] == absolute_max),
+        (ev["peak_time"] for ev in future_events if ev["peak_flow"] == absolute_max),
         None,
     )
 
     payload = {
-        "high_flow_predicted": len(merged_events) > 0,
+        "high_flow_predicted": len(future_events) > 0,
         "max_predicted_flow": absolute_max,
         "critical_date": critical_date,
-        "event_count": len(merged_events),
-        "events": merged_events,
+        "event_count": len(future_events),
+        "events": future_events,
         "threshold_m3s": FLOW_WARNING_THRESHOLD,
-        "csv_source_url": csv_source_url,
         "timestamp": now_local.isoformat(),
     }
 
@@ -562,16 +599,17 @@ async def download_graph_png(runtime_config, ha_headers):
 
                     csv_download = await csv_info.value
                     csv_temp_path = await csv_download.path()
-                    csv_source_url = csv_download.url
 
                     logger.info("CSV downloaded. Parsing prediction data...")
                     with open(csv_temp_path, "rb") as f:
                         csv_buffer = io.BytesIO(f.read())
 
                     # Process the CSV and get the payload dictionary back
-                    forecast_payload = process_csv_prediction(
-                        csv_buffer,
-                        csv_source_url=csv_source_url or runtime_config["graph_url"],
+                    forecast_payload = process_csv_prediction(csv_buffer)
+
+                    # Push the dictionary directly to Home Assistant
+                    send_forecast_to_home_assistant(
+                        forecast_payload, runtime_config, ha_headers
                     )
 
                     # Push the dictionary directly to Home Assistant
