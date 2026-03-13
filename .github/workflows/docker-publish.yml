@@ -32,7 +32,7 @@ jobs:
         with:
           images: ghcr.io/bennydiamond/river-monitor
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
             type=semver,pattern={{version}}
 
       - name: Build and push
