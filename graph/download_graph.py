@@ -12,6 +12,8 @@ import pytz
 from apscheduler.schedulers.blocking import BlockingScheduler
 import csv
 import requests  # Added for HA API push
+import uuid
+import re
 
 # --- CONFIGURATION ---
 DEFAULT_STATION_NUMBER = "030315"
@@ -19,7 +21,6 @@ DEFAULT_GRAPH_URL_TEMPLATE = (
     "https://www.cehq.gouv.qc.ca/suivihydro/graphique.asp?noStation={station_number}"
 )
 DEFAULT_HA_API_BASE_URL = "http://192.168.0.250:8123/api"
-DEFAULT_HA_ENTITY_ID = "sensor.riviere_noire_flood_forecast"
 
 LAST_SUCCESS_FILE = os.environ.get(
     "LAST_SUCCESS_FILE", "/opt/graph_automation/last_success.json"
@@ -41,6 +42,23 @@ FLOW_WARNING_THRESHOLD = float(
     os.environ.get("PREDICTION_THRESHOLD_M3S", "100.0")
 )  # m³/s
 PREDICTION_PROCESSING_ENABLED = FLOW_WARNING_THRESHOLD > 0.0
+SMART_ALERTS_ENABLED = os.environ.get("SMART_ALERTS_ENABLED", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+# Smart Alert Settings
+SMART_ALERT_MATCH_WINDOW_HOURS = int(
+    os.environ.get("SMART_ALERT_MATCH_WINDOW_HOURS", "4")
+)
+SMART_ALERT_UPDATE_DELTA_M3S = float(
+    os.environ.get("SMART_ALERT_UPDATE_DELTA_M3S", "30")
+)
+SMART_ALERT_NEW_LOOKAHEAD_DAYS = int(
+    os.environ.get("SMART_ALERT_NEW_LOOKAHEAD_DAYS", "1")
+)
 
 # Font & Text Settings
 FONT_SIZE_BASE_RATIO_WIDTH = 0.05
@@ -107,9 +125,34 @@ def parse_args():
         "--ha-api-base-url",
         default=os.environ.get("HA_API_BASE_URL", DEFAULT_HA_API_BASE_URL),
     )
+    parser.add_argument(
+        "--ha-forecast-entity-id",
+        default=os.environ.get("HA_FORECAST_ENTITY_ID"),
+    )
+    parser.add_argument(
+        "--ha-alerts-entity-id",
+        default=os.environ.get("HA_ALERTS_ENTITY_ID"),
+    )
     parser.add_argument("--ha-token", default=os.environ.get("HA_TOKEN"))
     parser.add_argument("--check-stale", action="store_true")
     return parser.parse_args()
+
+
+def slugify_token(value):
+    value = (value or "").strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    return value.strip("_")
+
+
+def normalize_sensor_entity_id(entity_id):
+    value = (entity_id or "").strip().lower()
+    if not value:
+        return ""
+    if value.startswith("sensor."):
+        return value
+    if "." in value:
+        return value
+    return f"sensor.{value}"
 
 
 def build_runtime_config(args):
@@ -117,11 +160,22 @@ def build_runtime_config(args):
     graph_url = args.graph_url
     if not graph_url:
         graph_url = DEFAULT_GRAPH_URL_TEMPLATE.format(station_number=station_number)
+
+    station_slug = slugify_token(station_number) or DEFAULT_STATION_NUMBER
+    default_base = f"station_{station_slug}"
+
+    default_forecast_entity_id = f"sensor.{default_base}_flood_forecast"
+    default_alerts_entity_id = f"sensor.{default_base}_flood_alerts"
+
+    forecast_entity_id = normalize_sensor_entity_id(args.ha_forecast_entity_id)
+    alerts_entity_id = normalize_sensor_entity_id(args.ha_alerts_entity_id)
+
     return {
         "station_number": station_number,
         "graph_url": graph_url,
         "ha_api_base_url": args.ha_api_base_url.strip(),
-        "ha_entity_id": DEFAULT_HA_ENTITY_ID,
+        "ha_entity_id": forecast_entity_id or default_forecast_entity_id,
+        "ha_alerts_entity_id": alerts_entity_id or default_alerts_entity_id,
     }
 
 
@@ -335,6 +389,38 @@ def send_forecast_to_home_assistant(forecast_data, runtime_config, ha_headers):
         logger.error(f"Error sending forecast to Home Assistant: {e}")
 
 
+def send_alerts_to_home_assistant(
+    alerts_payload, next_memory, new_alert_id, runtime_config, ha_headers
+):
+    if not alerts_payload:
+        return
+
+    ha_url = f"{runtime_config['ha_api_base_url']}/states/{runtime_config['ha_alerts_entity_id']}"
+
+    try:
+        response = requests.post(
+            ha_url, json=alerts_payload, headers=ha_headers, timeout=10
+        )
+        response.raise_for_status()
+
+        # SUCCESS: HA API received the alert. It is now safe to commit memory.
+        memory_file = os.path.join(OUTPUT_DIR, "flood_memory.json")
+        with open(memory_file, "w") as f:
+            json.dump(
+                {"tracked_events": next_memory, "alert_trigger_id": new_alert_id},
+                f,
+                indent=2,
+            )
+
+        logger.info(
+            f"Alerts successfully pushed to HA and memory committed: {runtime_config['ha_alerts_entity_id']}"
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error(
+            f"Error sending alerts to Home Assistant. Memory NOT saved. Will retry next run. Error: {e}"
+        )
+
+
 def process_csv_prediction(csv_buffer):
     """Parses the CSV dynamically, extracts events across the timeline,
     merges them, filters out past events, and returns the payload dict."""
@@ -522,6 +608,95 @@ def process_csv_prediction(csv_buffer):
     return payload
 
 
+def process_smart_alerts(forecast_payload):
+    future_events = forecast_payload.get("events", [])
+    threshold = forecast_payload.get("threshold_m3s", 100.0)
+
+    memory_file = os.path.join(OUTPUT_DIR, "flood_memory.json")
+    try:
+        with open(memory_file, "r") as f:
+            memory = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        memory = {"tracked_events": [], "alert_trigger_id": "initial"}
+
+    current_memory = memory.get("tracked_events", [])
+    last_alert_id = memory.get("alert_trigger_id", "initial")
+
+    alerts = {"new": [], "updated": [], "canceled": []}
+    next_memory = []
+
+    now_local = datetime.now(QUEBEC_TZ)
+    end_of_lookahead_window = (
+        now_local + timedelta(days=SMART_ALERT_NEW_LOOKAHEAD_DAYS)
+    ).replace(hour=23, minute=59, second=59)
+    CEHQ_TZ = pytz.timezone("EST")
+
+    def parse_time(t_str):
+        return CEHQ_TZ.localize(
+            datetime.strptime(t_str, "%Y-%m-%d %H:%M:%S")
+        ).astimezone(QUEBEC_TZ)
+
+    for ev in future_events:
+        ev_start = parse_time(ev["start_time"])
+        matched = None
+        for tr in current_memory:
+            if (
+                abs((ev_start - parse_time(tr["start_time"])).total_seconds())
+                <= timedelta(hours=SMART_ALERT_MATCH_WINDOW_HOURS).total_seconds()
+            ):
+                matched = tr
+                break
+
+        if matched:
+            current_memory.remove(matched)
+            delta = abs(ev["peak_flow"] - matched["initial_peak"])
+            if delta >= SMART_ALERT_UPDATE_DELTA_M3S:
+                alerts["updated"].append(
+                    {"event": ev, "old_peak": matched["initial_peak"]}
+                )
+                next_memory.append(
+                    {"start_time": ev["start_time"], "initial_peak": ev["peak_flow"]}
+                )
+            else:
+                next_memory.append(
+                    {
+                        "start_time": ev["start_time"],
+                        "initial_peak": matched["initial_peak"],
+                    }
+                )
+        else:
+            if ev_start <= end_of_lookahead_window:
+                alerts["new"].append(ev)
+                next_memory.append(
+                    {"start_time": ev["start_time"], "initial_peak": ev["peak_flow"]}
+                )
+
+    for tr in current_memory:
+        alerts["canceled"].append(
+            {"start_time": tr["start_time"], "old_peak": tr["initial_peak"]}
+        )
+
+    has_alerts = bool(alerts["new"] or alerts["updated"] or alerts["canceled"])
+    new_alert_id = str(uuid.uuid4()) if has_alerts else last_alert_id
+
+    total_alerts = len(alerts["new"]) + len(alerts["updated"]) + len(alerts["canceled"])
+    alerts_payload = {
+        "state": total_alerts,
+        "attributes": {
+            "friendly_name": "Alertes Rivière Noire",
+            "icon": "mdi:bell-ring",
+            "alerts": alerts,
+            "alert_trigger_id": new_alert_id,
+            "tracked_memory": next_memory,
+            "threshold_m3s": threshold,
+            "last_updated": now_local.isoformat(),
+        },
+    }
+
+    # Also return next_memory and new_alert_id so they can be saved LATER.
+    return alerts_payload, next_memory, new_alert_id
+
+
 # --- MAIN PLAYWRIGHT FETCH ROUTINE ---
 async def download_graph_png(runtime_config, ha_headers):
     url = runtime_config["graph_url"]
@@ -604,18 +779,32 @@ async def download_graph_png(runtime_config, ha_headers):
                     with open(csv_temp_path, "rb") as f:
                         csv_buffer = io.BytesIO(f.read())
 
-                    # Process the CSV and get the payload dictionary back
+                    # 1. Parse the CSV
                     forecast_payload = process_csv_prediction(csv_buffer)
 
-                    # Push the dictionary directly to Home Assistant
+                    # 2. Push RAW forecasts to the original sensor
                     send_forecast_to_home_assistant(
                         forecast_payload, runtime_config, ha_headers
                     )
 
-                    # Push the dictionary directly to Home Assistant
-                    send_forecast_to_home_assistant(
-                        forecast_payload, runtime_config, ha_headers
-                    )
+                    if SMART_ALERTS_ENABLED:
+                        # 3. Process memory and generate the filtered payload
+                        alerts_payload, next_memory, new_alert_id = (
+                            process_smart_alerts(forecast_payload)
+                        )
+
+                        # 4. Push alerts to the NEW sensor and save memory
+                        send_alerts_to_home_assistant(
+                            alerts_payload,
+                            next_memory,
+                            new_alert_id,
+                            runtime_config,
+                            ha_headers,
+                        )
+                    else:
+                        logger.info(
+                            "Smart alerts disabled (SMART_ALERTS_ENABLED=false)."
+                        )
                 else:
                     logger.info(
                         "Prediction processing disabled because PREDICTION_THRESHOLD_M3S=0."
@@ -672,6 +861,10 @@ if __name__ == "__main__":
                 "Prediction processing enabled with threshold %.3f m3/s.",
                 FLOW_WARNING_THRESHOLD,
             )
+            if SMART_ALERTS_ENABLED:
+                logger.info("Smart alerts enabled.")
+            else:
+                logger.info("Smart alerts disabled (SMART_ALERTS_ENABLED=false).")
         else:
             logger.info("Prediction processing disabled (PREDICTION_THRESHOLD_M3S=0).")
 
