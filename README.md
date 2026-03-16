@@ -17,7 +17,7 @@ This project runs two automated tasks in separate Docker containers with configu
 - ✅ Programs run immediately on startup, then follow cron schedule
 - ✅ Home Assistant token configurable via environment variable or file
 - ✅ Station number and HA API base URL configurable via env or CLI args
-- ✅ Entity IDs derived from station number
+- ✅ Entity IDs derived automatically, with optional explicit overrides
 - ✅ Automatic restarts on failure
 - ✅ Montreal timezone configured
 - ✅ **Remote syslog logging - minimal disk writes**
@@ -209,14 +209,71 @@ forecast sensor emission to Home Assistant.
 
 Any predicted flow at or above this value is treated as a warning event.
 
+Smart alerts can be toggled independently from forecast processing:
+
+```bash
+SMART_ALERTS_ENABLED=true
+```
+
+Set `SMART_ALERTS_ENABLED=false` to keep forecast CSV parsing and forecast sensor
+updates enabled while disabling smart alert generation and alert sensor updates.
+
+What smart alerts are used for:
+- Convert raw forecast events into actionable alert lifecycle updates for Home Assistant.
+- Classify forecast changes as `new`, `updated`, or `canceled` events.
+- Expose a dedicated alert payload (for example, `sensor.station_<station_number>_flood_alerts`) for automations/notifications.
+
+Benefits:
+- Reduces alert noise by suppressing minor forecast fluctuations.
+- Avoids duplicate alerts by matching near-identical events across runs.
+- Tracks event lifecycle so automations can react differently to new risk vs. escalation vs. cancellation.
+- Improves reliability: alert memory is committed only after a successful Home Assistant API write.
+
+How it behaves at a high level:
+- Forecast events are matched against prior tracked events within a configurable time window.
+- A forecast is marked `updated` only when peak flow changes by at least the configured delta.
+- Brand-new alerts are limited to a configurable lookahead window.
+- Removed/vanished tracked events are emitted as `canceled` alerts.
+
+Smart alert behavior is also configurable:
+
+```bash
+SMART_ALERTS_ENABLED=true
+SMART_ALERT_MATCH_WINDOW_HOURS=4
+SMART_ALERT_UPDATE_DELTA_M3S=30
+SMART_ALERT_NEW_LOOKAHEAD_DAYS=1
+```
+
+- `SMART_ALERTS_ENABLED`: enables or disables smart alert generation.
+- `SMART_ALERT_MATCH_WINDOW_HOURS`: treats events starting within this many hours as the same tracked event.
+- `SMART_ALERT_UPDATE_DELTA_M3S`: only emits an update alert when peak flow changes by at least this amount.
+- `SMART_ALERT_NEW_LOOKAHEAD_DAYS`: only emits brand-new alerts for events starting within this many days ahead, through the end of the final day.
+
 ### Home Assistant Entity IDs
 
-Entity IDs are derived from the station number to keep configuration minimal:
+River data entities are derived from the station number to keep configuration minimal:
 
 ```text
 sensor.station_<station_number>_flow_rate
 sensor.station_<station_number>_height_level
 ```
+
+Graph forecast and smart-alert entities are also generated automatically.
+Default behavior:
+
+- Uses station-based defaults that are not tied to a specific waterway name:
+   `sensor.station_<station_number>_flood_forecast` and `sensor.station_<station_number>_flood_alerts`
+
+Optional explicit overrides:
+
+```bash
+HA_FORECAST_ENTITY_ID=my_forecast_entity
+HA_ALERTS_ENTITY_ID=my_alerts_entity
+```
+
+Notes:
+- You can provide either `my_entity` or `sensor.my_entity`.
+- If the `sensor.` prefix is missing, it is added automatically.
 
 The graph downloader also maintains a daily backup on persistent storage so the web server can serve data after a reboot without connectivity:
 
