@@ -735,7 +735,9 @@ async def download_graph_png(runtime_config, ha_headers):
 
                     await page.wait_for_timeout(1000)
 
-                    async with page.expect_download(timeout=TIMEOUT_MS) as download_info:
+                    async with page.expect_download(
+                        timeout=TIMEOUT_MS
+                    ) as download_info:
                         logger.info(f"Clicking '{dl_text}'...")
                         await page.click(f"text={dl_text}", force=True)
 
@@ -764,7 +766,9 @@ async def download_graph_png(runtime_config, ha_headers):
                         await menu_button.click()
 
                         csv_text = "Télécharger en CSV"
-                        await page.wait_for_selector(f"text={csv_text}", state="visible")
+                        await page.wait_for_selector(
+                            f"text={csv_text}", state="visible"
+                        )
                         await page.wait_for_timeout(1000)
 
                         async with page.expect_download(timeout=TIMEOUT_MS) as csv_info:
