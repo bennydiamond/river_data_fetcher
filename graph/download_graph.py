@@ -705,7 +705,8 @@ async def download_graph_png(runtime_config, ha_headers):
     for attempt in range(1, FETCH_RETRY_COUNT + 1):
         try:
             async with async_playwright() as p:
-                async with await p.chromium.launch() as browser:
+                browser = await p.chromium.launch()
+                try:
                     # User Agent Spoofing
                     context = await browser.new_context(
                         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -814,6 +815,8 @@ async def download_graph_png(runtime_config, ha_headers):
                         )
 
                     return
+                finally:
+                    await browser.close()
 
         except Exception as e:
             if attempt < FETCH_RETRY_COUNT:
