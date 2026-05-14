@@ -816,7 +816,13 @@ async def download_graph_png(runtime_config, ha_headers):
 
                     return
                 finally:
-                    await browser.close()
+                    try:
+                        await browser.close()
+                    except Exception:
+                        logger.warning(
+                            "Browser cleanup failed during close(); suppressing cleanup error.",
+                            exc_info=True,
+                        )
 
         except Exception as e:
             if attempt < FETCH_RETRY_COUNT:
