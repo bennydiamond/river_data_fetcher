@@ -4,6 +4,7 @@ services:
   river-monitor:
     image: ghcr.io/bennydiamond/river-monitor:latest
     container_name: river-monitor
+    init: true
     restart: unless-stopped
     volumes:
       - web-tmpfs:/usr/share/nginx/html
