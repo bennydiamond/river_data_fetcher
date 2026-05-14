@@ -705,113 +705,111 @@ async def download_graph_png(runtime_config, ha_headers):
     for attempt in range(1, FETCH_RETRY_COUNT + 1):
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch()
+                async with await p.chromium.launch() as browser:
+                    # User Agent Spoofing
+                    context = await browser.new_context(
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    )
 
-                # User Agent Spoofing
-                context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
+                    page = await context.new_page()
+                    page.set_default_timeout(TIMEOUT_MS)
 
-                page = await context.new_page()
-                page.set_default_timeout(TIMEOUT_MS)
+                    logger.info(f"Navigating to {url}...")
 
-                logger.info(f"Navigating to {url}...")
+                    await page.goto(url)
+                    await page.wait_for_selector("#container3", state="visible")
+                    logger.info("Graph container visible.")
 
-                await page.goto(url)
-                await page.wait_for_selector("#container3", state="visible")
-                logger.info("Graph container visible.")
+                    # --- 1. DOWNLOAD PNG ---
+                    menu_btn_sel = 'button.highcharts-a11y-proxy-element[aria-label*="Détail des prochains jours"]'
+                    menu_button = await page.wait_for_selector(
+                        menu_btn_sel, state="visible"
+                    )
 
-                # --- 1. DOWNLOAD PNG ---
-                menu_btn_sel = 'button.highcharts-a11y-proxy-element[aria-label*="Détail des prochains jours"]'
-                menu_button = await page.wait_for_selector(
-                    menu_btn_sel, state="visible"
-                )
-
-                await page.wait_for_timeout(1000)
-                await menu_button.click()
-                logger.info("Menu clicked.")
-
-                dl_text = "Télécharger l'image PNG"
-                await page.wait_for_selector(f"text={dl_text}")
-
-                await page.wait_for_timeout(1000)
-
-                async with page.expect_download(timeout=TIMEOUT_MS) as download_info:
-                    logger.info(f"Clicking '{dl_text}'...")
-                    await page.click(f"text={dl_text}", force=True)
-
-                download = await download_info.value
-
-                # --- IN-MEMORY PROCESSING ---
-                # Playwright saves to a system temp file first (e.g., /tmp/...).
-                # We read that directly into RAM. Playwright cleans it up automatically on browser.close().
-                temp_path = await download.path()
-                logger.info(
-                    f"Download acquired (temp path: {temp_path}). Loading into RAM..."
-                )
-
-                with open(temp_path, "rb") as f:
-                    memory_buffer = io.BytesIO(f.read())
-
-                # Pass the RAM buffer to the processor
-                if process_and_save_image(memory_buffer):
-                    save_last_success_time()
-                    backup_if_missing()
-
-                if PREDICTION_PROCESSING_ENABLED:
-                    # --- 2. DOWNLOAD CSV ---
-                    logger.info("Re-opening menu to download CSV...")
-                    # The menu closes after the first click, so we open it again
+                    await page.wait_for_timeout(1000)
                     await menu_button.click()
+                    logger.info("Menu clicked.")
 
-                    csv_text = "Télécharger en CSV"
-                    await page.wait_for_selector(f"text={csv_text}", state="visible")
+                    dl_text = "Télécharger l'image PNG"
+                    await page.wait_for_selector(f"text={dl_text}")
+
                     await page.wait_for_timeout(1000)
 
-                    async with page.expect_download(timeout=TIMEOUT_MS) as csv_info:
-                        logger.info(f"Clicking '{csv_text}'...")
-                        await page.click(f"text={csv_text}", force=True)
+                    async with page.expect_download(timeout=TIMEOUT_MS) as download_info:
+                        logger.info(f"Clicking '{dl_text}'...")
+                        await page.click(f"text={dl_text}", force=True)
 
-                    csv_download = await csv_info.value
-                    csv_temp_path = await csv_download.path()
+                    download = await download_info.value
 
-                    logger.info("CSV downloaded. Parsing prediction data...")
-                    with open(csv_temp_path, "rb") as f:
-                        csv_buffer = io.BytesIO(f.read())
-
-                    # 1. Parse the CSV
-                    forecast_payload = process_csv_prediction(csv_buffer)
-
-                    # 2. Push RAW forecasts to the original sensor
-                    send_forecast_to_home_assistant(
-                        forecast_payload, runtime_config, ha_headers
+                    # --- IN-MEMORY PROCESSING ---
+                    # Playwright saves to a system temp file first (e.g., /tmp/...).
+                    # We read that directly into RAM. Playwright cleans it up automatically on browser.close().
+                    temp_path = await download.path()
+                    logger.info(
+                        f"Download acquired (temp path: {temp_path}). Loading into RAM..."
                     )
 
-                    if SMART_ALERTS_ENABLED:
-                        # 3. Process memory and generate the filtered payload
-                        alerts_payload, next_memory, new_alert_id = (
-                            process_smart_alerts(forecast_payload)
+                    with open(temp_path, "rb") as f:
+                        memory_buffer = io.BytesIO(f.read())
+
+                    # Pass the RAM buffer to the processor
+                    if process_and_save_image(memory_buffer):
+                        save_last_success_time()
+                        backup_if_missing()
+
+                    if PREDICTION_PROCESSING_ENABLED:
+                        # --- 2. DOWNLOAD CSV ---
+                        logger.info("Re-opening menu to download CSV...")
+                        # The menu closes after the first click, so we open it again
+                        await menu_button.click()
+
+                        csv_text = "Télécharger en CSV"
+                        await page.wait_for_selector(f"text={csv_text}", state="visible")
+                        await page.wait_for_timeout(1000)
+
+                        async with page.expect_download(timeout=TIMEOUT_MS) as csv_info:
+                            logger.info(f"Clicking '{csv_text}'...")
+                            await page.click(f"text={csv_text}", force=True)
+
+                        csv_download = await csv_info.value
+                        csv_temp_path = await csv_download.path()
+
+                        logger.info("CSV downloaded. Parsing prediction data...")
+                        with open(csv_temp_path, "rb") as f:
+                            csv_buffer = io.BytesIO(f.read())
+
+                        # 1. Parse the CSV
+                        forecast_payload = process_csv_prediction(csv_buffer)
+
+                        # 2. Push RAW forecasts to the original sensor
+                        send_forecast_to_home_assistant(
+                            forecast_payload, runtime_config, ha_headers
                         )
 
-                        # 4. Push alerts to the NEW sensor and save memory
-                        send_alerts_to_home_assistant(
-                            alerts_payload,
-                            next_memory,
-                            new_alert_id,
-                            runtime_config,
-                            ha_headers,
-                        )
+                        if SMART_ALERTS_ENABLED:
+                            # 3. Process memory and generate the filtered payload
+                            alerts_payload, next_memory, new_alert_id = (
+                                process_smart_alerts(forecast_payload)
+                            )
+
+                            # 4. Push alerts to the NEW sensor and save memory
+                            send_alerts_to_home_assistant(
+                                alerts_payload,
+                                next_memory,
+                                new_alert_id,
+                                runtime_config,
+                                ha_headers,
+                            )
+                        else:
+                            logger.info(
+                                "Smart alerts disabled (SMART_ALERTS_ENABLED=false)."
+                            )
                     else:
                         logger.info(
-                            "Smart alerts disabled (SMART_ALERTS_ENABLED=false)."
+                            "Prediction processing disabled because PREDICTION_THRESHOLD_M3S=0."
                         )
-                else:
-                    logger.info(
-                        "Prediction processing disabled because PREDICTION_THRESHOLD_M3S=0."
-                    )
 
-                await browser.close()
-                return
+                    return
 
         except Exception as e:
             if attempt < FETCH_RETRY_COUNT:
